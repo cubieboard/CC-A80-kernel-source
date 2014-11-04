@@ -1,0 +1,4 @@
+menu "Modules"
+
+source "modules/mali/Kconfig"
+endmenu

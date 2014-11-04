@@ -1,0 +1,10 @@
+menu "Mali"
+
+config MALI_LINUX_ENV
+	bool "Mali in Linux enviorment"
+	depends on ARCH_SUNXI
+	default n
+	help
+	  Say 'y' if mali will run in Linux enviorment.
+	  Say 'n' if run in Android enviorment.
+endmenu

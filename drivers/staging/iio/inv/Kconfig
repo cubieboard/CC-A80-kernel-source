@@ -1,0 +1,7 @@
+#
+# IIO IMU drivers configuration
+#
+
+
+source "drivers/staging/iio/inv/inv_sensors/Kconfig"
+

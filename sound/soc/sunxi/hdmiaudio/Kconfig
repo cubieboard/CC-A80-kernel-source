@@ -1,0 +1,8 @@
+
+config SND_SUNXI_SOC_HDMIAUDIO
+	tristate "HDMI Audio for SUNXI chips"
+	depends on ARCH_SUN9IW1 || ARCH_SUN8IW6 || ARCH_SUN8IW1
+	select SND_SOC_DMAENGINE_PCM
+	default n
+	help
+	  Say Y or M if you want to add support for hdmi audio

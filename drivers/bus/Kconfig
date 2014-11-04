@@ -1,0 +1,20 @@
+#
+# Bus Devices
+#
+
+menu "Bus devices"
+
+config SUNXI_GTBUS
+	bool "SUNXI GTBUS driver support"
+	depends on ARM
+	help
+	  Driver supporting the gt bus for sun9i
+	  platforms.
+
+config SUNXI_MBUS
+	bool "SUNXI MBUS driver support"
+	depends on ARM
+	help
+	  Driver supporting the mbus for sun8i
+	  platforms.
+endmenu
