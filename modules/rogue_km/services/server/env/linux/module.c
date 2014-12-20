@@ -535,25 +535,6 @@ static IMG_BOOL bDriverIsShutdown;
 static void PVRSRVDriverShutdown(LDM_DEV *pDevice)
 {
 	PVR_TRACE(("PVRSRVDriverShutdown (pDevice=%p)", pDevice));
-
-	mutex_lock(&gsPMMutex);
-
-	if (!bDriverIsShutdown && !bDriverIsSuspended)
-	{
-		/*
-		 * Take the bridge mutex, and never release it, to stop
-		 * processes trying to use the driver after it has been
-		 * shutdown.
-		 */
-		mutex_lock(&gPVRSRVLock);
-
-		(void) PVRSRVSetPowerStateKM(PVRSRV_SYS_POWER_STATE_OFF, IMG_TRUE);
-	}
-
-	bDriverIsShutdown = IMG_TRUE;
-
-	/* The bridge mutex is held on exit */
-	mutex_unlock(&gsPMMutex);
 }
 
 /*!
