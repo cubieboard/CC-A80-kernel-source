@@ -372,12 +372,33 @@ PVRSRVBridgeServerSyncAlloc(IMG_UINT32 ui32BridgeID,
 	IMG_HANDLE hDevNodeInt = IMG_NULL;
 	SERVER_SYNC_PRIMITIVE * psSyncHandleInt = IMG_NULL;
 	IMG_HANDLE hSyncHandleInt2 = IMG_NULL;
+	IMG_CHAR *uiClassNameInt = IMG_NULL;
 
 	PVRSRV_BRIDGE_ASSERT_CMD(ui32BridgeID, PVRSRV_BRIDGE_SYNC_SERVERSYNCALLOC);
 
 
 
 
+	if (psServerSyncAllocIN->ui32ClassNameSize != 0)
+	{
+		uiClassNameInt = OSAllocMem(psServerSyncAllocIN->ui32ClassNameSize * sizeof(IMG_CHAR));
+		if (!uiClassNameInt)
+		{
+			psServerSyncAllocOUT->eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+	
+			goto ServerSyncAlloc_exit;
+		}
+	}
+
+			/* Copy the data over */
+			if ( !OSAccessOK(PVR_VERIFY_READ, (IMG_VOID*) psServerSyncAllocIN->puiClassName, psServerSyncAllocIN->ui32ClassNameSize * sizeof(IMG_CHAR))
+				|| (OSCopyFromUser(NULL, uiClassNameInt, psServerSyncAllocIN->puiClassName,
+				psServerSyncAllocIN->ui32ClassNameSize * sizeof(IMG_CHAR)) != PVRSRV_OK) )
+			{
+				psServerSyncAllocOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
+
+				goto ServerSyncAlloc_exit;
+			}
 
 				{
 					/* Look up the address from the handle */
@@ -397,7 +418,9 @@ PVRSRVBridgeServerSyncAlloc(IMG_UINT32 ui32BridgeID,
 		PVRSRVServerSyncAllocKM(
 					hDevNodeInt,
 					&psSyncHandleInt,
-					&psServerSyncAllocOUT->ui32SyncPrimVAddr);
+					&psServerSyncAllocOUT->ui32SyncPrimVAddr,
+					psServerSyncAllocIN->ui32ClassNameSize,
+					uiClassNameInt);
 	/* Exit early if bridged call fails */
 	if(psServerSyncAllocOUT->eError != PVRSRV_OK)
 	{
@@ -443,6 +466,8 @@ ServerSyncAlloc_exit:
 		}
 	}
 
+	if (uiClassNameInt)
+		OSFreeMem(uiClassNameInt);
 
 	return 0;
 }
@@ -882,7 +907,7 @@ PVRSRVBridgeSyncPrimOpCreate(IMG_UINT32 ui32BridgeID,
 					psSyncPrimOpCreateOUT->eError =
 						PVRSRVLookupHandle(psConnection->psHandleBase,
 											(IMG_HANDLE *) &hServerSyncInt2[i],
-											hServerSyncInt2[i],
+											psSyncPrimOpCreateIN->phServerSync[i],
 											PVRSRV_HANDLE_TYPE_SERVER_SYNC_PRIMITIVE);
 					if(psSyncPrimOpCreateOUT->eError != PVRSRV_OK)
 					{

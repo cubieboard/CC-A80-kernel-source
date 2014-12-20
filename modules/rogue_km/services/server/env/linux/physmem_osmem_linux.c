@@ -50,6 +50,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvrsrv_memallocflags.h"
 
 /* services/server/include/ */
+#include "allocmem.h"
 #include "osfunc.h"
 #include "pdump_physmem.h"
 #include "pdump_km.h"
@@ -60,7 +61,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /* ourselves */
 #include "physmem_osmem.h"
 
-#if defined(PVRSRV_ENABLE_PROCESS_STATS) && defined(PVRSRV_ENABLE_MEMORY_STATS)
+#if defined(PVRSRV_ENABLE_PROCESS_STATS)
 #include "process_stats.h"
 #endif
 #include <linux/version.h>
@@ -80,7 +81,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #if defined(CONFIG_X86)
 #include <asm/cacheflush.h>
 #endif
-#if defined(__arm__) || defined (__metag__)
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64) || defined (CONFIG_METAG)
 #include "osfunc.h"
 #endif
 
@@ -142,7 +143,7 @@ struct _PMR_OSPAGEARRAY_DATA_ {
  * Page pooling for uncached pages *
  ***********************************/
  
-static IMG_VOID
+static void
 _FreeOSPage(IMG_UINT32 ui32CPUCacheFlags,
 			IMG_UINT32 uiOrder,
 			IMG_BOOL bUnsetMemoryType,
@@ -168,16 +169,16 @@ static LIST_HEAD(g_sPagePoolList);
 static DEFINE_MUTEX(g_sPagePoolMutex);
 static LIST_HEAD(g_sUncachedPagePoolList);
 
-static inline int
-_PagePoolTrylock(void)
-{
-	return mutex_trylock(&g_sPagePoolMutex);
-}
-
 static inline void
 _PagePoolLock(void)
 {
 	mutex_lock(&g_sPagePoolMutex);
+}
+
+static inline int
+_PagePoolTrylock(void)
+{
+	return mutex_trylock(&g_sPagePoolMutex);
 }
 
 static inline void
@@ -187,7 +188,7 @@ _PagePoolUnlock(void)
 }
 
 static LinuxPagePoolEntry *
-_LinuxPagePoolEntryAlloc(IMG_VOID)
+_LinuxPagePoolEntryAlloc(void)
 {
     return kmem_cache_zalloc(g_psLinuxPagePoolCache, GFP_KERNEL);
 }
@@ -217,7 +218,7 @@ static inline IMG_BOOL _GetPoolListHead(IMG_UINT32 ui32CPUCacheFlags, struct lis
 	return IMG_TRUE;
 }
 
-static IMG_VOID
+static void
 _LinuxPagePoolEntryFree(LinuxPagePoolEntry *psPagePoolEntry)
 {
 	kmem_cache_free(g_psLinuxPagePoolCache, psPagePoolEntry);
@@ -299,7 +300,7 @@ _CountObjectsInPagePool(struct shrinker *psShrinker, struct shrink_control *psSh
 
 	/* In order to avoid possible deadlock use mutex_trylock in place of mutex_lock */
 	if (_PagePoolTrylock() == 0)
-			return 0;
+		return 0;
 	remain = g_ui32PagePoolEntryCount;
 	_PagePoolUnlock();
 
@@ -318,7 +319,7 @@ _ScanObjectsInPagePool(struct shrinker *psShrinker, struct shrink_control *psShr
 
 	/* In order to avoid possible deadlock use mutex_trylock in place of mutex_lock */
 	if (_PagePoolTrylock() == 0)
-			return SHRINK_STOP;
+		return SHRINK_STOP;
 	list_for_each_entry_safe(psPagePoolEntry, psTempPoolEntry, &g_sPagePoolList, sPagePoolItem)
 	{
 		_RemoveEntryFromPoolUnlocked(psPagePoolEntry);
@@ -427,7 +428,7 @@ static void DisableOOMKiller(void)
 	current->flags |= PF_DUMPCORE;
 }
 
-static IMG_VOID _InitPagePool(IMG_VOID)
+static void _InitPagePool(void)
 {
 	IMG_UINT32 ui32Flags = 0;
 
@@ -447,7 +448,7 @@ static IMG_VOID _InitPagePool(IMG_VOID)
 	_PagePoolUnlock();
 }
 
-static IMG_VOID _DeinitPagePool(IMG_VOID)
+static void _DeinitPagePool(void)
 {
 	LinuxPagePoolEntry *psPagePoolEntry, *psTempPoolEntry;
 
@@ -515,7 +516,7 @@ static void EnableOOMKiller(void)
 	current->flags &= ~PF_DUMPCORE;
 }
 
-static IMG_VOID
+static void
 _PoisonPages(struct page *page,
              IMG_UINT32 uiOrder,
              const IMG_CHAR *pacPoisonData,
@@ -563,7 +564,7 @@ _AllocOSPageArray(PMR_SIZE_T uiSize,
 		struct _PMR_OSPAGEARRAY_DATA_ **ppsPageArrayDataPtr)
 {
     PVRSRV_ERROR eError;
-    IMG_VOID *pvData;
+    void *pvData;
     IMG_UINT32 uiNumPages;
 
     struct page **ppsPageArray;
@@ -578,9 +579,13 @@ _AllocOSPageArray(PMR_SIZE_T uiSize,
     }
 
     PVR_ASSERT(PAGE_SHIFT <= uiLog2PageSize);
-
     if ((uiSize & ((1ULL << uiLog2PageSize) - 1)) != 0)
     {
+    	PVR_DPF((PVR_DBG_ERROR,
+    			"Allocation size "PMR_SIZE_FMTSPEC" is not multiple of page size 2^%u !",
+    			uiSize,
+    			uiLog2PageSize));
+
         eError = PVRSRV_ERROR_PMR_NOT_PAGE_MULTIPLE;
         goto e_freed_pvdata;
     }
@@ -590,9 +595,8 @@ _AllocOSPageArray(PMR_SIZE_T uiSize,
     uiNumPages = (IMG_UINT32)(((uiSize-1)>>uiLog2PageSize) + 1);
     PVR_ASSERT(((PMR_SIZE_T)uiNumPages << uiLog2PageSize) == uiSize);
 
-    pvData = kmalloc(sizeof(struct _PMR_OSPAGEARRAY_DATA_) +
-                     sizeof(struct page *) * uiNumPages,
-                     GFP_KERNEL);
+    pvData = OSAllocMem(sizeof(struct _PMR_OSPAGEARRAY_DATA_) +
+                     sizeof(struct page *) * uiNumPages);
     if (pvData == IMG_NULL)
     {
         PVR_DPF((PVR_DBG_ERROR,
@@ -638,9 +642,7 @@ _AllocOSPage(IMG_UINT32 ui32CPUCacheFlags,
 {
 	PVRSRV_ERROR eError = PVRSRV_OK;
 	IMG_BOOL bFromPagePool = IMG_FALSE;
-#if defined (CONFIG_X86) || defined(__arm__) || defined (__metag__)
 	IMG_PVOID pvPageVAddr;
-#endif
 	struct page *psPage = IMG_NULL;
 
 	*pbUnsetMemoryType = IMG_FALSE;
@@ -718,7 +720,7 @@ _AllocOSPage(IMG_UINT32 ui32CPUCacheFlags,
 			}
 		}
 #endif
-#if defined (__arm__) || defined (__metag__)
+#if defined (CONFIG_ARM) || defined(CONFIG_ARM64) || defined (CONFIG_METAG)
 		/*
 		On ARM kernels we can be given pages which still remain in the cache.
 		In order to make sure that the data we write through our mappings
@@ -772,7 +774,7 @@ _AllocOSPage(IMG_UINT32 ui32CPUCacheFlags,
 			pvPageVAddr = kmap(psPage);
 			memset(pvPageVAddr, 0, PAGE_SIZE);
 
-#if defined (__arm__) || defined (__metag__)
+#if defined (CONFIG_ARM) || defined(CONFIG_ARM64) || defined (CONFIG_METAG)
 			if (ui32CPUCacheFlags != PVRSRV_MEMALLOCFLAG_CPU_CACHED)
 			{
 				IMG_CPU_PHYADDR sCPUPhysAddrStart, sCPUPhysAddrEnd;
@@ -814,7 +816,7 @@ _AllocOSPage(IMG_UINT32 ui32CPUCacheFlags,
 	the page back to the OS since we may have to revert the cache properties
 	of the page to the default as given by the OS when it was allocated.
 */
-static IMG_VOID
+static void
 _FreeOSPage(IMG_UINT32 ui32CPUCacheFlags,
 			IMG_UINT32 uiOrder,
 			IMG_BOOL bUnsetMemoryType,
@@ -952,8 +954,10 @@ _AllocOSPages(struct _PMR_OSPAGEARRAY_DATA_ **ppsPageArrayDataPtr)
                          _AllocPoison,
                          _AllocPoisonSize);
         }
-#if defined(PVRSRV_ENABLE_PROCESS_STATS) && defined(PVRSRV_ENABLE_MEMORY_STATS)
-#if defined(PVRSRV_MEMORY_STATS_LITE)
+
+#if defined(PVRSRV_ENABLE_PROCESS_STATS)
+#if !defined(PVRSRV_ENABLE_MEMORY_STATS)
+		/* Allocation is done a page at a time */
 		PVRSRVStatsIncrMemAllocStat(PVRSRV_MEM_ALLOC_TYPE_ALLOC_UMA_PAGES, PAGE_SIZE);
 #else
 		{
@@ -991,7 +995,7 @@ _FreeOSPagesArray(struct _PMR_OSPAGEARRAY_DATA_ *psPageArrayData)
 {
     PVR_DPF((PVR_DBG_MESSAGE, "physmem_osmem_linux.c: freed OS memory for PMR @0x%p", psPageArrayData));
 
-    kfree(psPageArrayData);
+    OSFreeMem(psPageArrayData);
 
     return PVRSRV_OK;
 }
@@ -1025,8 +1029,10 @@ _FreeOSPages(struct _PMR_OSPAGEARRAY_DATA_ *psPageArrayData)
 						 _FreePoison,
 						 _FreePoisonSize);
 		}
-#if defined(PVRSRV_ENABLE_PROCESS_STATS) && defined(PVRSRV_ENABLE_MEMORY_STATS)
-#if defined(PVRSRV_MEMORY_STATS_LITE)
+
+#if defined(PVRSRV_ENABLE_PROCESS_STATS)
+#if !defined(PVRSRV_ENABLE_MEMORY_STATS)
+		/* Allocation is done a page at a time */
 		PVRSRVStatsDecrMemAllocStat(PVRSRV_MEM_ALLOC_TYPE_ALLOC_UMA_PAGES, PAGE_SIZE);
 #else
 		{
@@ -1195,22 +1201,55 @@ PMRSysPhysAddrOSMem(PMR_IMPL_PRIVDATA pvPriv,
     return eError;
 }
 
+typedef struct _PMR_OSPAGEARRAY_KERNMAP_DATA_ {
+	void *pvBase;
+	IMG_UINT32 ui32PageCount;
+} PMR_OSPAGEARRAY_KERNMAP_DATA;
+
 static PVRSRV_ERROR
 PMRAcquireKernelMappingDataOSMem(PMR_IMPL_PRIVDATA pvPriv,
                                  IMG_SIZE_T uiOffset,
                                  IMG_SIZE_T uiSize,
-                                 IMG_VOID **ppvKernelAddressOut,
+                                 void **ppvKernelAddressOut,
                                  IMG_HANDLE *phHandleOut,
                                  PMR_FLAGS_T ulFlags)
 {
     PVRSRV_ERROR eError;
     struct _PMR_OSPAGEARRAY_DATA_ *psOSPageArrayData;
-    IMG_VOID *pvAddress;
+    void *pvAddress;
     pgprot_t prot = PAGE_KERNEL;
     IMG_UINT32 ui32CPUCacheFlags;
+    IMG_UINT32 ui32PageOffset;
+    IMG_SIZE_T uiMapOffset;
+    IMG_UINT32 ui32PageCount;
+    PMR_OSPAGEARRAY_KERNMAP_DATA *psData;
 
     psOSPageArrayData = pvPriv;
 	ui32CPUCacheFlags = DevmemCPUCacheMode(ulFlags);
+
+	/*
+		Zero offset and size as a special meaning which means map in the
+		whole of the PMR, this is due to fact that the places that call
+		this callback might not have access to be able to determine the
+		physical size
+	*/
+	if ((uiOffset == 0) && (uiSize == 0))
+	{
+		ui32PageOffset = 0;
+		uiMapOffset = 0;
+		ui32PageCount = psOSPageArrayData->uiNumPages;
+	}
+	else
+	{
+		IMG_SIZE_T uiEndoffset;
+
+		ui32PageOffset = uiOffset >> psOSPageArrayData->uiLog2PageSize;
+		uiMapOffset = uiOffset - (ui32PageOffset << psOSPageArrayData->uiLog2PageSize);
+		uiEndoffset = uiOffset + uiSize - 1;
+		// Add one as we want the count, not the offset
+		ui32PageCount = (uiEndoffset >> psOSPageArrayData->uiLog2PageSize) + 1;
+		ui32PageCount -= ui32PageOffset;
+	}
 
     if (psOSPageArrayData->uiLog2PageSize != PAGE_SHIFT)
     {
@@ -1238,36 +1277,50 @@ PMRAcquireKernelMappingDataOSMem(PMR_IMPL_PRIVDATA pvPriv,
 				eError = PVRSRV_ERROR_INVALID_PARAMS;
 				goto e0;
 	}
-	pvAddress = vm_map_ram(psOSPageArrayData->pagearray,
-						   psOSPageArrayData->uiNumPages,
+	
+	psData = OSAllocMem(sizeof(PMR_OSPAGEARRAY_KERNMAP_DATA));
+	if (psData == NULL)
+	{
+		eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+		goto e0;
+	}
+	
+	pvAddress = vm_map_ram(&psOSPageArrayData->pagearray[ui32PageOffset],
+						   ui32PageCount,
 						   -1,
 						   prot);
 	if (pvAddress == IMG_NULL)
 	{
 		eError = PVRSRV_ERROR_OUT_OF_MEMORY;
-		goto e0;
+		goto e1;
 	}
 
-    *ppvKernelAddressOut = pvAddress + uiOffset;
-    *phHandleOut = pvAddress;
+    *ppvKernelAddressOut = pvAddress + uiMapOffset;
+    psData->pvBase = pvAddress;
+    psData->ui32PageCount = ui32PageCount;
+    *phHandleOut = psData;
 
     return PVRSRV_OK;
 
     /*
       error exit paths follow
     */
-
+ e1:
+    OSFreeMem(psData);
  e0:
     PVR_ASSERT(eError != PVRSRV_OK);
     return eError;
 }
-static IMG_VOID PMRReleaseKernelMappingDataOSMem(PMR_IMPL_PRIVDATA pvPriv,
+static void PMRReleaseKernelMappingDataOSMem(PMR_IMPL_PRIVDATA pvPriv,
                                                  IMG_HANDLE hHandle)
 {
     struct _PMR_OSPAGEARRAY_DATA_ *psOSPageArrayData;
+    PMR_OSPAGEARRAY_KERNMAP_DATA *psData;
 
     psOSPageArrayData = pvPriv;
-    vm_unmap_ram(hHandle, psOSPageArrayData->uiNumPages);
+    psData = hHandle;
+    vm_unmap_ram(psData->pvBase, psData->ui32PageCount);
+    OSFreeMem(psData);
 }
 
 static PMR_IMPL_FUNCTAB _sPMROSPFuncTab = {

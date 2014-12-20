@@ -46,6 +46,9 @@
 # COMMON_CFLAGS or COMMON_USER_FLAGS. These flags are shared between
 # host and target, which might use compilers with different capabilities.
 
+# ANOTHER NOTE: All flags here must be architecture-independent (i.e. no
+# -march or toolchain include paths)
+
 # These flags are used for kernel, User C and User C++
 #
 COMMON_FLAGS := -W -Wall
@@ -212,6 +215,22 @@ ALL_HOST_CXXFLAGS := \
  -fno-rtti -fno-exceptions \
  $(COMMON_USER_FLAGS) $(COMMON_FLAGS) $(TESTED_HOST_USER_FLAGS)
 
+# Workaround for some target clangs that don't support -O0 w/ PIC.
+#
+ifeq ($(cc-is-clang),true)
+ALL_CFLAGS := $(patsubst -O0,-O1,$(ALL_CFLAGS))
+ALL_CXXFLAGS := $(patsubst -O0,-O1,$(ALL_CXXFLAGS))
+endif
+
+# Add GCOV_DIR just for target
+#
+ifeq ($(GCOV_BUILD),on)
+ifneq ($(GCOV_DIR),)
+ALL_CFLAGS += -fprofile-dir=$(GCOV_DIR)
+ALL_CXXFLAGS += -fprofile-dir=$(GCOV_DIR)
+endif
+endif
+
 # Kernel C only
 #
 ALL_KBUILD_CFLAGS := $(COMMON_CFLAGS) $(KBUILD_FLAGS) $(TESTED_KBUILD_FLAGS)
@@ -227,25 +246,12 @@ ALL_KBUILD_CFLAGS := $(COMMON_CFLAGS) $(KBUILD_FLAGS) $(TESTED_KBUILD_FLAGS)
 # For the same reason (Darwin 'ld') don't bother checking for text
 # relocations in host binaries.
 #
-ALL_HOST_LDFLAGS := -L$(HOST_OUT)
-ALL_LDFLAGS += \
- -Wl,--warn-shared-textrel \
- -L$(TARGET_OUT) -Xlinker -rpath-link=$(TARGET_OUT)
-
-ifneq ($(strip $(TOOLCHAIN)),)
-ALL_LDFLAGS += -L$(TOOLCHAIN)/lib -Xlinker -rpath-link=$(TOOLCHAIN)/lib
-endif
-
-ifneq ($(strip $(TOOLCHAIN2)),)
-ALL_LDFLAGS += -L$(TOOLCHAIN2)/lib -Xlinker -rpath-link=$(TOOLCHAIN2)/lib
-endif
-
-ifneq ($(strip $(LINKER_RPATH)),)
-ALL_LDFLAGS += $(addprefix -Xlinker -rpath=,$(LINKER_RPATH))
-endif
+ALL_HOST_LDFLAGS :=
+ALL_LDFLAGS := -Wl,--warn-shared-textrel
 
 ifeq ($(GCOV_BUILD),on)
 ALL_LDFLAGS += -fprofile-arcs
+ALL_HOST_LDFLAGS += -fprofile-arcs
 endif
 
 ALL_LDFLAGS += $(SYS_LDFLAGS)
@@ -258,3 +264,10 @@ ALL_CXX_MODULES :=
 
 # Toolchain triple for cross environment
 CROSS_TRIPLE := $(patsubst %-,%,$(CROSS_COMPILE))
+
+ifneq ($(TOOLCHAIN),)
+$(warning **********************************************)
+$(warning  The TOOLCHAIN option has been removed, but)
+$(warning  you have it set (via $(origin TOOLCHAIN)))
+$(warning **********************************************)
+endif

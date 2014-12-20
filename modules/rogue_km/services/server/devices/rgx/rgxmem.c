@@ -55,14 +55,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "sync_internal.h"
 #include "rgx_memallocflags.h"
 
-/*
-	FIXME:
-	For now just get global state, but what we really want is to do
-	this per memory context
-*/
+
 static IMG_UINT32 ui32CacheOpps = 0;
 static IMG_UINT32 ui32CacheOpSequence = 0;
-/* FIXME: End */
+
 
 #define SERVER_MMU_CONTEXT_MAX_NAME 40
 typedef struct _SERVER_MMU_CONTEXT_ {
@@ -71,6 +67,7 @@ typedef struct _SERVER_MMU_CONTEXT_ {
 	IMG_PID uiPID;
 	IMG_CHAR szProcessName[SERVER_MMU_CONTEXT_MAX_NAME];
 	DLLIST_NODE sNode;
+	PVRSRV_RGXDEV_INFO *psDevInfo;
 } SERVER_MMU_CONTEXT;
 
 IMG_VOID RGXMMUCacheInvalidate(PVRSRV_DEVICE_NODE *psDeviceNode,
@@ -191,7 +188,6 @@ PVRSRV_ERROR RGXPreKickCacheCommand(PVRSRV_RGXDEV_INFO 	*psDevInfo)
 	}
 
 	PDUMPPOWCMDSTART();
-
 	eError = PVRSRVSetDevicePowerStateKM(psDeviceNode->sDevId.ui32DeviceIndex,
 										 PVRSRV_DEV_POWER_STATE_ON,
 										 IMG_FALSE);
@@ -241,13 +237,16 @@ _PVRSRVPowerLock_Exit:
 IMG_VOID RGXUnregisterMemoryContext(IMG_HANDLE hPrivData)
 {
 	SERVER_MMU_CONTEXT *psServerMMUContext = hPrivData;
+	PVRSRV_RGXDEV_INFO *psDevInfo = psServerMMUContext->psDevInfo;
 
+	OSWRLockAcquireWrite(psDevInfo->hMemoryCtxListLock, DEVINFO_MEMORYLIST);
 	dllist_remove_node(&psServerMMUContext->sNode);
+	OSWRLockReleaseWrite(psDevInfo->hMemoryCtxListLock);
 
 	/*
 	 * Release the page catalogue address acquired in RGXRegisterMemoryContext().
 	 */
-	MMU_ReleaseBaseAddr(IMG_NULL /* FIXME */);
+	MMU_ReleaseBaseAddr(IMG_NULL );
 	
 	/*
 	 * Free the firmware memory context.
@@ -270,6 +269,7 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 	DEVMEM_FLAGS_T			uiFWMemContextMemAllocFlags;
 	RGXFWIF_FWMEMCONTEXT	*psFWMemContext;
 	DEVMEM_MEMDESC			*psFWMemContextMemDesc;
+	SERVER_MMU_CONTEXT *psServerMMUContext;
 
 	if (psDevInfo->psKernelMMUCtx == IMG_NULL)
 	{
@@ -281,13 +281,14 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 	}
 	else
 	{
-		SERVER_MMU_CONTEXT *psServerMMUContext;
-
 		psServerMMUContext = OSAllocMem(sizeof(*psServerMMUContext));
 		if (psServerMMUContext == IMG_NULL)
 		{
-			return PVRSRV_ERROR_OUT_OF_MEMORY;
+			eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+			goto fail_alloc_server_ctx;
 		}
+
+		psServerMMUContext->psDevInfo = psDevInfo;
 
 		/*
 		 * This FW MemContext is only mapped into kernel for initialisation purposes.
@@ -296,6 +297,7 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 		 * and write-combine is suffice on the CPU side (WC buffer will be flushed at any kick)
 		 */
 		uiFWMemContextMemAllocFlags = PVRSRV_MEMALLOCFLAG_DEVICE_FLAG(PMMETA_PROTECT) |
+										PVRSRV_MEMALLOCFLAG_DEVICE_FLAG(META_CACHED) |
 										PVRSRV_MEMALLOCFLAG_GPU_READABLE |
 										PVRSRV_MEMALLOCFLAG_GPU_WRITEABLE |
 										PVRSRV_MEMALLOCFLAG_GPU_CACHE_INCOHERENT |
@@ -309,7 +311,7 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 			application.
 		*/
 		PDUMPCOMMENT("Allocate RGX firmware memory context");
-		/* FIXME: why cache-consistent? */
+		
 		eError = DevmemFwAllocate(psDevInfo,
 								sizeof(*psFWMemContext),
 								uiFWMemContextMemAllocFlags,
@@ -320,7 +322,7 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 		{
 			PVR_DPF((PVR_DBG_ERROR,"RGXRegisterMemoryContext: Failed to allocate firmware memory context (%u)",
 					eError));
-			goto RGXRegisterMemoryContext_error;
+			goto fail_alloc_fw_ctx;
 		}
 		
 		/*
@@ -332,7 +334,7 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 		{
 			PVR_DPF((PVR_DBG_ERROR,"RGXRegisterMemoryContext: Failed to map firmware memory context (%u)",
 					eError));
-			goto RGXRegisterMemoryContext_error;
+			goto fail_acquire_cpu_addr;
 		}
 		
 		/*
@@ -344,7 +346,8 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 		{
 			PVR_DPF((PVR_DBG_ERROR,"RGXRegisterMemoryContext: Failed to acquire Page Catalogue address (%u)",
 					eError));
-			goto RGXRegisterMemoryContext_error;
+			DevmemReleaseCpuVirtAddr(psFWMemContextMemDesc);
+			goto fail_acquire_base_addr;
 		}
 
 		/*
@@ -378,7 +381,8 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 			{
 				PVR_DPF((PVR_DBG_ERROR,"RGXRegisterMemoryContext: Failed to generate a Dump Page Catalogue address (%u)",
 						eError));
-				goto RGXRegisterMemoryContext_error;
+				DevmemReleaseCpuVirtAddr(psFWMemContextMemDesc);
+				goto fail_pdump_cat_base_addr;
 			}
 
 			/*
@@ -395,7 +399,8 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 			{
 				PVR_DPF((PVR_DBG_ERROR,"RGXRegisterMemoryContext: Failed to acquire Page Catalogue address (%u)",
 						eError));
-				goto RGXRegisterMemoryContext_error;
+				DevmemReleaseCpuVirtAddr(psFWMemContextMemDesc);
+				goto fail_pdump_cat_base;
 			}
 		}
 #endif
@@ -407,7 +412,7 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 
 		/*
 		 * Store the process information for this device memory context
-		 * for use with the host page-fault anylsis.
+		 * for use with the host page-fault analysis.
 		 */
 		psServerMMUContext->uiPID = OSGetCurrentProcessIDKM();
 		psServerMMUContext->psMMUContext = psMMUContext;
@@ -420,15 +425,29 @@ PVRSRV_ERROR RGXRegisterMemoryContext(PVRSRV_DEVICE_NODE	*psDeviceNode,
 			psServerMMUContext->szProcessName[SERVER_MMU_CONTEXT_MAX_NAME-1] = '\0';
 		}
 
+		OSWRLockAcquireWrite(psDevInfo->hMemoryCtxListLock, DEVINFO_MEMORYLIST);
 		dllist_add_to_tail(&psDevInfo->sMemoryContextList, &psServerMMUContext->sNode);
+		OSWRLockReleaseWrite(psDevInfo->hMemoryCtxListLock);
 
 		MMU_SetDeviceData(psMMUContext, psFWMemContextMemDesc);
 		*hPrivData = psServerMMUContext;
 	}
 			
 	return PVRSRV_OK;
-		
-RGXRegisterMemoryContext_error:
+
+#if defined(PDUMP)
+fail_pdump_cat_base:
+fail_pdump_cat_base_addr:
+	MMU_ReleaseBaseAddr(IMG_NULL);
+#endif
+fail_acquire_base_addr:
+	/* Done before jumping to the fail point as the release is done before exit */
+fail_acquire_cpu_addr:
+	DevmemFwFree(psServerMMUContext->psFWMemContextMemDesc);
+fail_alloc_fw_ctx:
+	OSFreeMem(psServerMMUContext);
+fail_alloc_server_ctx:
+	PVR_ASSERT(eError != PVRSRV_OK);
 	return eError;
 }
 
@@ -475,9 +494,13 @@ IMG_VOID RGXCheckFaultAddress(PVRSRV_RGXDEV_INFO *psDevInfo, IMG_DEV_VIRTADDR *p
 	sFaultData.psDevVAddr = psDevVAddr;
 	sFaultData.psDevPAddr = psDevPAddr;
 
+	OSWRLockAcquireRead(psDevInfo->hMemoryCtxListLock, DEVINFO_MEMORYLIST);
+
 	dllist_foreach_node(&psDevInfo->sMemoryContextList,
 						_RGXCheckFaultAddress,
 						&sFaultData);
+
+	OSWRLockReleaseRead(psDevInfo->hMemoryCtxListLock);
 }
 
 /******************************************************************************

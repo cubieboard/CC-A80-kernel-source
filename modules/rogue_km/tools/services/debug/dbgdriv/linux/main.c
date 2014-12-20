@@ -67,10 +67,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "img_types.h"
 #include "linuxsrv.h"
 #include "dbgdriv_ioctl.h"
-#include "dbgdrvif.h"
+#include "dbgdrvif_srv5.h"
 #include "dbgdriv.h"
 #include "hostfunc.h"
-#include "hotkey.h"
 #include "pvr_debug.h"
 #include "pvrmodule.h"
 #include "pvr_uaccess.h"
@@ -90,6 +89,7 @@ static struct class *psDbgDrvClass;
 static int AssignedMajorNumber = 0;
 
 long dbgdrv_ioctl(struct file *, unsigned int, unsigned long);
+long dbgdrv_ioctl_compat(struct file *, unsigned int, unsigned long);
 
 static int dbgdrv_open(struct inode unref__ * pInode, struct file unref__ * pFile)
 {
@@ -110,6 +110,7 @@ static struct file_operations dbgdrv_fops =
 {
 	.owner          = THIS_MODULE,
 	.unlocked_ioctl = dbgdrv_ioctl,
+	.compat_ioctl   = dbgdrv_ioctl_compat,
 	.open           = dbgdrv_open,
 	.release        = dbgdrv_release,
 	.mmap           = dbgdrv_mmap,
@@ -117,9 +118,9 @@ static struct file_operations dbgdrv_fops =
 
 #endif  /* defined(SUPPORT_DRM) */
 
-/* Outward temp buffer used by ICOTL handler allocated once and grows as needed.
+/* Outward temp buffer used by IOCTL handler allocated once and grows as needed.
  * This optimisation means the debug driver performs less vmallocs/vfrees
- * reducing the chance of kernel Vmalloc space exhaustion.
+ * reducing the chance of kernel vmalloc space exhaustion.
  * but is not multi-threaded optimised as it now uses a mutex to protect this
  * shared buffer serialising buffer reads. However the PDump client is not
  * multi-threaded at the moment.
@@ -234,15 +235,12 @@ ErrDestroyClass:
 #endif /* !defined(SUPPORT_DRM) */
 }
 
-#if defined(SUPPORT_DRM)
-int dbgdrv_ioctl(struct drm_device *dev, IMG_VOID *arg, struct drm_file *pFile)
-#else
-long dbgdrv_ioctl(struct file *file, unsigned int ioctlCmd, unsigned long arg)
-#endif
+static IMG_INT dbgdrv_ioctl_work(IMG_VOID *arg, IMG_BOOL bCompat)
 {
 	IOCTL_PACKAGE *pIP = (IOCTL_PACKAGE *) arg;
 	char *buffer, *in, *out;
 	unsigned int cmd;
+	IMG_VOID *pBufferIn, *pBufferOut;
 
 	if ((pIP->ui32InBufferSize > (PAGE_SIZE >> 1) ) || (pIP->ui32OutBufferSize > (PAGE_SIZE >> 1)))
 	{
@@ -260,7 +258,10 @@ long dbgdrv_ioctl(struct file *file, unsigned int ioctlCmd, unsigned long arg)
 	in = buffer;
 	out = buffer + (PAGE_SIZE >>1);
 
-	if (pvr_copy_from_user(in, pIP->pInBuffer, pIP->ui32InBufferSize) != 0)
+	pBufferIn = WIDEPTR_GET_PTR(pIP->pInBuffer, bCompat);
+	pBufferOut = WIDEPTR_GET_PTR(pIP->pOutBuffer, bCompat);
+
+	if (pvr_copy_from_user(in, pBufferIn, pIP->ui32InBufferSize) != 0)
 	{
 		goto init_failed;
 	}
@@ -271,7 +272,9 @@ long dbgdrv_ioctl(struct file *file, unsigned int ioctlCmd, unsigned long arg)
 	if (pIP->ui32Cmd == DEBUG_SERVICE_READ)
 	{
 		IMG_UINT32 *pui32BytesCopied = (IMG_UINT32 *)out;
+		DBG_OUT_READ *psReadOutParams = (DBG_OUT_READ *)out;
 		DBG_IN_READ *psReadInParams = (DBG_IN_READ *)in;
+		IMG_VOID *pvOutBuffer;
 		PDBG_STREAM psStream;
 
 		psStream = SID2PStream(psReadInParams->hStream);
@@ -296,12 +299,15 @@ long dbgdrv_ioctl(struct file *file, unsigned int ioctlCmd, unsigned long arg)
 			}
 		}
 
-		*pui32BytesCopied = DBGDrivRead(psStream,
-										   psReadInParams->bReadInitBuffer,
+		psReadOutParams->ui32DataRead = DBGDrivRead(psStream,
+										   psReadInParams->ui32BufID,
 										   psReadInParams->ui32OutBufferSize,
 										   g_outTmpBuf);
+		psReadOutParams->ui32SplitMarker = DBGDrivGetMarker(psStream);
 
-		if (pvr_copy_to_user(psReadInParams->u.pui8OutBuffer,
+		pvOutBuffer = WIDEPTR_GET_PTR(psReadInParams->pui8OutBuffer, bCompat);
+
+		if (pvr_copy_to_user(pvOutBuffer,
 						g_outTmpBuf,
 						*pui32BytesCopied) != 0)
 		{
@@ -313,10 +319,10 @@ long dbgdrv_ioctl(struct file *file, unsigned int ioctlCmd, unsigned long arg)
 	}
 	else
 	{
-		(g_DBGDrivProc[cmd])(in, out);
+		(g_DBGDrivProc[cmd])(in, out, bCompat);
 	}
 
-	if (copy_to_user(pIP->pOutBuffer, out, pIP->ui32OutBufferSize) != 0)
+	if (copy_to_user(pBufferOut, out, pIP->ui32OutBufferSize) != 0)
 	{
 		goto init_failed;
 	}
@@ -329,37 +335,24 @@ init_failed:
 	return -EFAULT;
 }
 
-
-/******************************************************************************
- * Function Name: RemoveHotKey
- *
- * Inputs       : -
- * Outputs      : -
- * Returns      : -
- * Globals Used : -
- *
- * Description  : Removes HotKey callbacks
- *****************************************************************************/
-IMG_VOID RemoveHotKey (IMG_UINT32 hHotKey)
+#if defined(SUPPORT_DRM)
+int dbgdrv_ioctl(struct drm_device *dev, IMG_VOID *arg, struct drm_file *pFile)
+#else
+long dbgdrv_ioctl(struct file *file, unsigned int ioctlCmd, unsigned long arg)
+#endif
 {
-	PVR_UNREFERENCED_PARAMETER(hHotKey);
+	return dbgdrv_ioctl_work((IMG_VOID *) arg, IMG_FALSE);
 }
 
-/******************************************************************************
- * Function Name: DefineHotKey
- *
- * Inputs       : -
- * Outputs      : -
- * Returns      : -
- * Globals Used : -
- *
- * Description  : Removes HotKey callbacks
- *****************************************************************************/
-IMG_VOID DefineHotKey (IMG_UINT32 ui32ScanCode, IMG_UINT32 ui32ShiftState, PHOTKEYINFO psInfo)
+#if defined(SUPPORT_DRM)
+int dbgdrv_ioctl_compat(struct drm_device *dev, IMG_VOID *arg, struct drm_file *pFile)
+#else
+long dbgdrv_ioctl_compat(struct file *file, unsigned int ioctlCmd, unsigned long arg)
+#endif
 {
-	PVR_UNREFERENCED_PARAMETER(ui32ScanCode);
-	PVR_UNREFERENCED_PARAMETER(ui32ShiftState);
-	PVR_UNREFERENCED_PARAMETER(psInfo);
+	return dbgdrv_ioctl_work((IMG_VOID *) arg, IMG_TRUE);
 }
+
+
 
 EXPORT_SYMBOL(DBGDrvGetServiceTable);

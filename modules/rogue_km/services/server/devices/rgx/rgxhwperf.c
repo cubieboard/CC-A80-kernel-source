@@ -422,6 +422,7 @@ static PVRSRV_RGXDEV_INFO* gpsRgxDevInfo = IMG_NULL;
 PVRSRV_ERROR RGXHWPerfInit(PVRSRV_DEVICE_NODE *psRgxDevNode, IMG_BOOL bEnable)
 {
 	PVRSRV_ERROR eError;
+	IMG_UINT32 ui32L2BufferSize;
 
 	PVR_DPF_ENTERED;
 
@@ -464,9 +465,18 @@ PVRSRV_ERROR RGXHWPerfInit(PVRSRV_DEVICE_NODE *psRgxDevNode, IMG_BOOL bEnable)
 	 * are the more chance of this happening.
 	 * Size chosen to allow MISR to write an L1 sized packet and for the client
 	 * application/daemon to drain a L1 sized packet e.g. ~ 2xL1+64 working space.
+	 * 
+	 * However in the case of NO_HARDWARE the L2 buffer will not be used.
+	 * By reducing the size of the L2 buffer we can support a larger L1 buffer size
+	 * since on a 32-bit system, vmalloc memory is limitted.
 	 */
+#if defined(NO_HARDWARE)
+	ui32L2BufferSize = 0;
+#else
+	ui32L2BufferSize = gpsRgxDevInfo->ui32RGXFWIfHWPerfBufSize<<1;
+#endif
 	eError = TLStreamCreate(&gpsRgxDevInfo->hHWPerfStream, HWPERF_TL_STREAM_NAME,
-					(gpsRgxDevInfo->ui32RGXFWIfHWPerfBufSize<<1)+RGXFW_HWPERF_L1_PADDING_DEFAULT,
+					ui32L2BufferSize+RGXFW_HWPERF_L1_PADDING_DEFAULT,
 					TL_FLAG_DROP_DATA | TL_FLAG_NO_SIGNAL_ON_COMMIT,
 #if !defined(SUPPORT_TL_PROODUCER_CALLBACK)
 					IMG_NULL, IMG_NULL
@@ -523,7 +533,7 @@ IMG_VOID RGXHWPerfDeinit(void)
 */
 PVRSRV_ERROR PVRSRVRGXCtrlHWPerfKM(
 		PVRSRV_DEVICE_NODE*	psDeviceNode,
-		IMG_BOOL			bEnable,
+		IMG_BOOL			bToggle,
 		IMG_UINT64 			ui64Mask)
 {
 	PVRSRV_ERROR 		eError = PVRSRV_OK;
@@ -540,7 +550,7 @@ PVRSRV_ERROR PVRSRVRGXCtrlHWPerfKM(
 	 * Stream allocated on demand to reduce RAM foot print on systems not
 	 * needing HWPerf resources.
 	 */
-	if (psDevice->hHWPerfStream == 0)
+	if (psDevice->hHWPerfStream == IMG_NULL)
 	{
 		eError = RGXHWPerfInit(psDeviceNode, IMG_TRUE);
 		PVR_LOGR_IF_ERROR(eError, "RGXHWPerfInit");
@@ -549,7 +559,7 @@ PVRSRV_ERROR PVRSRVRGXCtrlHWPerfKM(
 	/* Prepare command parameters ...
 	 */
 	sKccbCmd.eCmdType = RGXFWIF_KCCB_CMD_HWPERF_CTRL_EVENTS;
-	sKccbCmd.uCmdData.sHWPerfCtrl.bEnable = bEnable;
+	sKccbCmd.uCmdData.sHWPerfCtrl.bToggle = bToggle;
 	sKccbCmd.uCmdData.sHWPerfCtrl.ui64Mask = ui64Mask;
 
 	/* PVR_DPF((PVR_DBG_VERBOSE, "PVRSRVRGXCtrlHWPerfKM parameters set, calling FW")); */
@@ -590,13 +600,13 @@ PVRSRV_ERROR PVRSRVRGXCtrlHWPerfKM(
 	}*/
 
 #if defined(DEBUG)
-	if (bEnable)
+	if (bToggle)
 	{
-		PVR_DPF((PVR_DBG_WARNING, "HWPerf events have been ENABLED (%llx)", ui64Mask));
+		PVR_DPF((PVR_DBG_WARNING, "HWPerf events (%llx) have been TOGGLED", ui64Mask));
 	}
 	else
 	{
-		PVR_DPF((PVR_DBG_WARNING, "HWPerf events have been DISABLED (%llx)", ui64Mask));
+		PVR_DPF((PVR_DBG_WARNING, "HWPerf mask has been SET to (%llx)", ui64Mask));
 	}
 #endif
 
@@ -700,6 +710,106 @@ fail1:
 
 
 /*
+	PVRSRVRGXConfigCustomCountersReadingHWPerfKM
+ */
+PVRSRV_ERROR PVRSRVRGXConfigCustomCountersKM(
+		PVRSRV_DEVICE_NODE*     psDeviceNode,
+		IMG_UINT16              ui16CustomBlockID,
+		IMG_UINT16              ui16NumCustomCounters,
+		IMG_UINT32*             pui32CustomCounterIDs)
+{
+	PVRSRV_ERROR        eError = PVRSRV_OK;
+	RGXFWIF_KCCB_CMD    sKccbCmd;
+	DEVMEM_MEMDESC*     psFwSelectCntrsMemDesc = IMG_NULL;
+	IMG_UINT32*         psFwArray;
+
+	PVR_DPF_ENTERED;
+
+	PVR_ASSERT(psDeviceNode);
+
+	PVR_DPF((PVR_DBG_MESSAGE, "PVRSRVRGXSelectCustomCountersKM: configure block %u to read %u counters", ui16CustomBlockID, ui16NumCustomCounters));
+
+	/* Fill in the command structure with the parameters needed */
+	sKccbCmd.eCmdType = RGXFWIF_KCCB_CMD_HWPERF_SELECT_CUSTOM_CNTRS;
+	sKccbCmd.uCmdData.sHWPerfSelectCstmCntrs.ui16NumCounters = ui16NumCustomCounters;
+	sKccbCmd.uCmdData.sHWPerfSelectCstmCntrs.ui16CustomBlock = ui16CustomBlockID;
+
+	if (ui16NumCustomCounters > 0)
+	{
+		PVR_ASSERT(pui32CustomCounterIDs);
+
+		eError = DevmemFwAllocate(psDeviceNode->pvDevice,
+				sizeof(IMG_UINT32) * ui16NumCustomCounters,
+				PVRSRV_MEMALLOCFLAG_DEVICE_FLAG(PMMETA_PROTECT) |
+				PVRSRV_MEMALLOCFLAG_GPU_READABLE |
+				PVRSRV_MEMALLOCFLAG_GPU_WRITEABLE |
+				PVRSRV_MEMALLOCFLAG_CPU_READABLE |
+				PVRSRV_MEMALLOCFLAG_KERNEL_CPU_MAPPABLE |
+				PVRSRV_MEMALLOCFLAG_UNCACHED |
+				PVRSRV_MEMALLOCFLAG_ZERO_ON_ALLOC,
+				"HWPerfConfigCustomCounters",
+				&psFwSelectCntrsMemDesc);
+		if (eError != PVRSRV_OK)
+			PVR_LOGR_IF_ERROR(eError, "DevmemFwAllocate");
+
+		RGXSetFirmwareAddress(&sKccbCmd.uCmdData.sHWPerfSelectCstmCntrs.pui32CustomCounterIDs,
+				psFwSelectCntrsMemDesc, 0, 0);
+
+		eError = DevmemAcquireCpuVirtAddr(psFwSelectCntrsMemDesc, (IMG_VOID **)&psFwArray);
+		if (eError != PVRSRV_OK)
+		{
+			PVR_LOGG_IF_ERROR(eError, "DevmemAcquireCpuVirtAddr", fail1);
+		}
+
+		OSMemCopy(psFwArray, pui32CustomCounterIDs, sizeof(IMG_UINT32) * ui16NumCustomCounters);
+		DevmemPDumpLoadMem(psFwSelectCntrsMemDesc,
+				0,
+				sizeof(IMG_UINT32) * ui16NumCustomCounters,
+				0);
+	}
+
+	/* Push in the KCCB the command to configure the custom counters block */
+	eError = RGXScheduleCommand(psDeviceNode->pvDevice,
+			RGXFWIF_DM_GP, &sKccbCmd, sizeof(sKccbCmd), IMG_TRUE);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_LOGG_IF_ERROR(eError, "RGXScheduleCommand", fail2);
+	}
+	PVR_DPF((PVR_DBG_VERBOSE, "PVRSRVRGXSelectCustomCountersKM: Command scheduled"));
+
+	/* Wait for FW to complete */
+	eError = RGXWaitForFWOp(psDeviceNode->pvDevice, RGXFWIF_DM_GP, psDeviceNode->psSyncPrim, IMG_TRUE);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_LOGG_IF_ERROR(eError, "RGXWaitForFWOp", fail2);
+	}
+	PVR_DPF((PVR_DBG_VERBOSE, "PVRSRVRGXSelectCustomCountersKM: FW operation completed"));
+
+	if (ui16NumCustomCounters > 0)
+	{
+		/* Release temporary memory used for block configuration */
+		RGXUnsetFirmwareAddress(psFwSelectCntrsMemDesc);
+		DevmemReleaseCpuVirtAddr(psFwSelectCntrsMemDesc);
+		DevmemFwFree(psFwSelectCntrsMemDesc);
+	}
+
+	PVR_DPF((PVR_DBG_MESSAGE, "HWPerf custom counters %u reading will be sent with the next HW events", ui16NumCustomCounters));
+
+	PVR_DPF_RETURN_OK;
+
+	fail2:
+	if (psFwSelectCntrsMemDesc) DevmemReleaseCpuVirtAddr(psFwSelectCntrsMemDesc);
+
+	fail1:
+	if (psFwSelectCntrsMemDesc) 
+	{
+		RGXUnsetFirmwareAddress(psFwSelectCntrsMemDesc);
+		DevmemFwFree(psFwSelectCntrsMemDesc);
+	}
+	
+	PVR_DPF_RETURN_RC(eError);
+}
+/*
 	PVRSRVRGXDisableHWPerfcountersKM
 */
 PVRSRV_ERROR PVRSRVRGXCtrlHWPerfCountersKM(
@@ -769,18 +879,21 @@ static IMG_VOID RGXHWPerfFTraceCmdCompleteNotify(PVRSRV_CMDCOMP_HANDLE);
 
 static IMG_VOID RGXHWPerfFTraceGPUEnable(void)
 {
-	PVRSRV_ERROR eError;
+	PVRSRV_ERROR eError = PVRSRV_OK;
 
 	PVR_DPF_ENTERED;
+
+	PVR_ASSERT(gpsRgxDevNode && gpsRgxDevInfo);
 
 	/* In the case where the AppHint has not been set we need to
 	 * initialise the host driver HWPerf resources here. Allocated on
 	 * demand to reduce RAM foot print on systems not needing HWPerf.
+	 * Signal FW to enable event generation.
 	 */
-	if (gpsRgxDevInfo->hHWPerfStream == IMG_NULL)
+	if (gpsRgxDevNode->psSyncPrim)
 	{
-		eError = RGXHWPerfInit(IMG_NULL, IMG_TRUE);
-		PVR_LOGG_IF_ERROR(eError, "RGXHWPerfInit", err_out);
+		eError = PVRSRVRGXCtrlHWPerfKM(gpsRgxDevNode, IMG_FALSE, RGX_HWPERF_EVENT_MASK_HW_KICKFINISH);
+		PVR_LOGG_IF_ERROR(eError, "PVRSRVRGXCtrlHWPerfKM", err_out);
 	}
 
 	/* Connect to the TL Stream for HWPerf data consumption */
@@ -802,6 +915,8 @@ static IMG_VOID RGXHWPerfFTraceGPUEnable(void)
 		gpsRgxDevInfo);
 	PVR_LOGG_IF_ERROR(eError, "PVRSRVRegisterCmdCompleteNotify", err_close_stream);
 
+	gpsRgxDevInfo->bFTraceGPUEventsEnabled = IMG_TRUE;
+
 err_out:
 	PVR_DPF_RETURN;
 
@@ -813,13 +928,22 @@ err_disconnect:
 	goto err_out;
 }
 
-static IMG_VOID RGXHWPerfFTraceGPUDisable(void)
+static IMG_VOID RGXHWPerfFTraceGPUDisable(IMG_BOOL bDeInit)
 {
 	PVRSRV_ERROR eError;
 
 	PVR_DPF_ENTERED;
 
+	PVR_ASSERT(gpsRgxDevNode && gpsRgxDevInfo);
+
 	OSLockAcquire(hFTraceLock);
+
+	if (!bDeInit)
+	{
+		eError = PVRSRVRGXCtrlHWPerfKM(gpsRgxDevNode, IMG_FALSE, (RGX_HWPERF_EVENT_MASK_NONE));
+		PVR_LOG_IF_ERROR(eError, "PVRSRVRGXCtrlHWPerfKM");
+	}
+
 
 	if (gpsRgxDevInfo->hGPUTraceCmdCompleteHandle)
 	{
@@ -845,6 +969,8 @@ static IMG_VOID RGXHWPerfFTraceGPUDisable(void)
 		gpsRgxDevInfo->hGPUTraceTLConnection = IMG_NULL;
 	}
 
+	gpsRgxDevInfo->bFTraceGPUEventsEnabled = IMG_FALSE;
+
 	OSLockRelease(hFTraceLock);
 
 	PVR_DPF_RETURN;
@@ -865,14 +991,17 @@ IMG_VOID RGXHWPerfFTraceGPUEventsEnabledSet(IMG_BOOL bNewValue)
 	}
 
 	bOldValue = gpsRgxDevInfo->bFTraceGPUEventsEnabled;
-	gpsRgxDevInfo->bFTraceGPUEventsEnabled = bNewValue;
 
 	if (bOldValue != bNewValue)
 	{
 		if (bNewValue)
+		{
 			RGXHWPerfFTraceGPUEnable();
+		}
 		else
-			RGXHWPerfFTraceGPUDisable();
+		{
+			RGXHWPerfFTraceGPUDisable(IMG_FALSE);
+		}
 	}
 
 	PVR_DPF_RETURN;
@@ -880,7 +1009,12 @@ IMG_VOID RGXHWPerfFTraceGPUEventsEnabledSet(IMG_BOOL bNewValue)
 
 IMG_VOID PVRGpuTraceEnabledSet(IMG_BOOL bNewValue)
 {
+	/* Lock down because we need to protect
+	 * RGXHWPerfFTraceGPUDisable()/RGXHWPerfFTraceGPUEnable()
+	 */
+	OSAcquireBridgeLock();
 	RGXHWPerfFTraceGPUEventsEnabledSet(bNewValue);
+	OSReleaseBridgeLock();
 }
 
 IMG_BOOL RGXHWPerfFTraceGPUEventsEnabled(IMG_VOID)
@@ -894,7 +1028,7 @@ IMG_BOOL PVRGpuTraceEnabled(IMG_VOID)
 }
 
 IMG_VOID RGXHWPerfFTraceGPUEnqueueEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
-		IMG_UINT32 ui32FrameNum, IMG_UINT32 ui32RTData,
+		IMG_UINT32 ui32ExternalJobRef, IMG_UINT32 ui32InternalJobRef,
 		const IMG_CHAR* pszJobType)
 {
 	IMG_UINT32   ui32PID = OSGetCurrentProcessIDKM();
@@ -903,9 +1037,9 @@ IMG_VOID RGXHWPerfFTraceGPUEnqueueEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 
 	PVR_ASSERT(pszJobType);
 
-	PVR_DPF((PVR_DBG_VERBOSE, "RGXHWPerfFTraceGPUEngueueEvent: PID %u, frame %u, RTDATA %x", ui32PID, ui32FrameNum, ui32RTData));
+	PVR_DPF((PVR_DBG_VERBOSE, "RGXHWPerfFTraceGPUEnqueueEvent: PID %u, external jobRef %u, internal jobRef %u", ui32PID, ui32ExternalJobRef, ui32InternalJobRef));
 
-	PVRGpuTraceClientWork(ui32PID, ui32FrameNum, ui32RTData, pszJobType);
+	PVRGpuTraceClientWork(ui32PID, ui32ExternalJobRef, ui32InternalJobRef, pszJobType);
 
 	PVR_DPF_RETURN;
 }
@@ -918,7 +1052,7 @@ static IMG_VOID RGXHWPerfFTraceGPUSwitchEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 	IMG_UINT64   ui64Timestamp;
 	RGX_HWPERF_HW_DATA_FIELDS* psHWPerfPktData;
 	IMG_UINT32 ui32DVFSClock;
-	IMG_UINT64 ui64CRTimerStamp = (OSReadHWReg64(psDevInfo->pvRegsBaseKM, RGX_CR_TIMER) & ~RGX_CR_TIMER_VALUE_CLRMSK) >> RGX_CR_TIMER_VALUE_SHIFT;
+	IMG_UINT64 ui64CRTimerStamp = RGXReadHWTimerReg(psDevInfo);
 	IMG_UINT64 ui64OSTimeStamp = OSClockus64();
 
 	PVR_DPF_ENTERED;
@@ -930,10 +1064,6 @@ static IMG_VOID RGXHWPerfFTraceGPUSwitchEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 
 	/* Filter out 3DFINISH events for 3DTQKICKs which have already been
 	 * filtered by ValidFTraceEvent() */
-	if (psHWPerfPktData->ui32RenderTarget == 0)
-	{
-		PVR_DPF_RETURN;
-	}
 
 	/* Calculate the OS timestamp given an RGX timestamp in the HWPerf event */
 	ui32DVFSClock = psDevInfo->psGpuDVFSHistory->aui32DVFSClockCB[psDevInfo->psGpuDVFSHistory->ui32CurrentDVFSId];
@@ -956,8 +1086,11 @@ static IMG_VOID RGXHWPerfFTraceGPUSwitchEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 				psHWPerfPkt->ui64RGXTimer, rgxCyclesPer_uS, deltaRgxCycles, deltaRgxCycles_remainder, delta_uS, ui64Timestamp ));
 	}
 
+	PVR_DPF((PVR_DBG_VERBOSE, "RGXHWPerfFTraceGPUSwitchEvent: %s ui32ExtJobRef=%d, ui32IntJobRef=%d, eSwType=%d",
+			pszWorkName, psHWPerfPktData->ui32ExtJobRef, psHWPerfPktData->ui32IntJobRef, eSwType));
+
 	PVRGpuTraceWorkSwitch(ui64Timestamp, psHWPerfPktData->ui32PID,
-			psHWPerfPktData->ui32FrameNum, psHWPerfPktData->ui32RenderTarget,
+			psHWPerfPktData->ui32ExtJobRef, psHWPerfPktData->ui32IntJobRef,
 			pszWorkName, eSwType);
 
 	PVR_DPF_RETURN;
@@ -972,22 +1105,28 @@ static IMG_BOOL ValidFTraceEvent(RGX_HWPERF_V2_PACKET_HDR* psHWPerfPkt,
 		IMG_CHAR* pszName;
 		PVR_GPUTRACE_SWITCH_TYPE eSwType;
 	} aszEventTypeMap[] = {
-			{ "TA",     PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
-			{ "TA",     PVR_GPUTRACE_SWITCH_TYPE_END },
-			{ IMG_NULL, 0 }, /* 3DTQ not supported, no valid RT data */
-			{ "3D",     PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
-			{ "3D",     PVR_GPUTRACE_SWITCH_TYPE_END },
-			{ IMG_NULL, 0 }, /* CDM not supported, client kick not added yet */
-			{ IMG_NULL, 0 }, /* CDM not supported, client kick not added yet */
-			{ IMG_NULL, 0 }, /* TLA not supported, client kick not added yet */
-			{ IMG_NULL, 0 }, /* TLA not supported, client kick not added yet */
-			{ "3DSPM",  PVR_GPUTRACE_SWITCH_TYPE_BEGIN }
+			{ /* RGX_HWPERF_HW_TAKICK */       "TA",     PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
+			{ /* RGX_HWPERF_HW_TAFINISHED */   "TA",     PVR_GPUTRACE_SWITCH_TYPE_END },
+			{ /* RGX_HWPERF_HW_3DTQKICK */     "TQ3D",   PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
+			{ /* RGX_HWPERF_HW_3DKICK */       "3D",     PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
+			{ /* RGX_HWPERF_HW_3DFINISHED */   "3D",     PVR_GPUTRACE_SWITCH_TYPE_END },
+			{ /* RGX_HWPERF_HW_CDMKICK */      "CDM",    PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
+			{ /* RGX_HWPERF_HW_CDMFINISHED */  "CDM",    PVR_GPUTRACE_SWITCH_TYPE_END },
+			{ /* RGX_HWPERF_HW_TLAKICK */      "TQ2D",   PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
+			{ /* RGX_HWPERF_HW_TLAFINISHED */  "TQ2D",   PVR_GPUTRACE_SWITCH_TYPE_END },
+			{ /* RGX_HWPERF_HW_3DSPMKICK */    "3DSPM",  PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
+			{ /* RGX_HWPERF_HW_PERIODIC */     IMG_NULL, 0 }, /* PERIODIC not supported */
+			{ /* RGX_HWPERF_HW_RTUKICK */      "RTU",    PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
+			{ /* RGX_HWPERF_HW_RTUFINISHED */  "RTU",    PVR_GPUTRACE_SWITCH_TYPE_END },
+			{ /* RGX_HWPERF_HW_SHGKICK */      "SHG",    PVR_GPUTRACE_SWITCH_TYPE_BEGIN },
+			{ /* RGX_HWPERF_HW_SHGFINISHED */  "SHG",    PVR_GPUTRACE_SWITCH_TYPE_END },
+			{ /* RGX_HWPERF_HW_3DTQFINISHED */ "TQ3D",   PVR_GPUTRACE_SWITCH_TYPE_END },
 	};
 
 	PVR_ASSERT(psHWPerfPkt);
 
 	eType = RGX_HWPERF_GET_TYPE(psHWPerfPkt);
-	if ((eType < RGX_HWPERF_HW_TAKICK) || (eType > RGX_HWPERF_HW_3DSPMKICK))
+	if ((eType < RGX_HWPERF_HW_TAKICK) || (eType > RGX_HWPERF_HW_3DTQFINISHED))
 	{
 		/* No map entry, ignore event */
 		PVR_DPF((PVR_DBG_VERBOSE, "ValidFTraceEvent: Unsupported event type %d %02d",
@@ -1091,10 +1230,9 @@ IMG_VOID RGXHWPerfFTraceCmdCompleteNotify(PVRSRV_CMDCOMP_HANDLE hCmdCompHandle)
 {
 	PVRSRV_DATA*        psPVRSRVData = PVRSRVGetPVRSRVData();
 	PVRSRV_RGXDEV_INFO* psDeviceInfo = hCmdCompHandle;
-	IMG_HANDLE			hUnusedByTL = psDeviceInfo->hGPUTraceTLConnection;
+	IMG_HANDLE			hUnusedByTL;
 	PVRSRV_ERROR        eError;
-	PVRSRV_ERROR        fError = PVRSRV_OK;
-	IMG_HANDLE          hStream = psDeviceInfo->hGPUTraceTLStream;
+	IMG_HANDLE          hStream;
 	IMG_PBYTE           pBuffer;
 	IMG_UINT32          ui32ReadLen;
 
@@ -1102,22 +1240,21 @@ IMG_VOID RGXHWPerfFTraceCmdCompleteNotify(PVRSRV_CMDCOMP_HANDLE hCmdCompHandle)
 
 	/* Command-complete notifiers can run concurrently. If this is
 	 * happening, just bail out and let the previous call finish.
+	 * This is ok because we can process the queued packets on the next call.
 	 */
-	if (OSLockIsLocked(hFTraceLock))
+	if (!(OSTryLockAcquire(hFTraceLock)))
 	{
 		PVR_DPF_RETURN;
 	}
 
-	OSLockAcquire(hFTraceLock);
-
 	/* Exit if no HWPerf enabled device exits */
-	if (psDeviceInfo == IMG_NULL || psPVRSRVData == IMG_NULL ||
-			gpsRgxDevInfo == NULL)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "RGXHWPerfFTraceGPUThread: Driver data or device data not valid"));
-		RGXHWPerfFTraceGPUDisable();
-		goto out_unlock;
-	}
+	PVR_ASSERT(psDeviceInfo != IMG_NULL &&
+	           psPVRSRVData != IMG_NULL &&
+	           gpsRgxDevInfo != NULL);
+
+
+	hUnusedByTL = psDeviceInfo->hGPUTraceTLConnection;
+	hStream = psDeviceInfo->hGPUTraceTLStream;
 
 	if (hStream)
 	{
@@ -1133,12 +1270,21 @@ IMG_VOID RGXHWPerfFTraceCmdCompleteNotify(PVRSRV_CMDCOMP_HANDLE hCmdCompHandle)
 				/* Process the transport layer data for HWPerf packets... */
 				RGXHWPerfFTraceGPUThreadProcessPackets (psDeviceInfo, pBuffer, ui32ReadLen);
 
-				fError = TLClientReleaseData(hUnusedByTL, hStream);
-				if (fError != PVRSRV_OK)
+				eError = TLClientReleaseData(hUnusedByTL, hStream);
+				if (eError != PVRSRV_OK)
 				{
+					PVR_LOG_ERROR(eError, "TLClientReleaseData");
+
 					/* Serious error, disable FTrace GPU events */
-					RGXHWPerfFTraceGPUDisable();
-					PVR_LOGG_IF_ERROR(fError, "TLClientReleaseData", out_unlock);
+
+					/* Release TraceLock so we always have the locking
+					 * order BridgeLock->TraceLock to prevent AB-BA deadlocks*/
+					OSLockRelease(hFTraceLock);
+					OSAcquireBridgeLock();
+					RGXHWPerfFTraceGPUDisable(IMG_FALSE);
+					OSReleaseBridgeLock();
+					goto out;
+
 				}
 			} /* else no data, ignore */
 		}
@@ -1148,9 +1294,8 @@ IMG_VOID RGXHWPerfFTraceCmdCompleteNotify(PVRSRV_CMDCOMP_HANDLE hCmdCompHandle)
 		}
 	}
 
-out_unlock:
 	OSLockRelease(hFTraceLock);
-
+out:
 	PVR_DPF_RETURN;
 }
 
@@ -1176,10 +1321,7 @@ IMG_VOID RGXHWPerfFTraceGPUDeInit(PVRSRV_RGXDEV_INFO *psDevInfo)
 {
 	PVR_DPF_ENTERED;
 
-	if (gpsRgxDevInfo->bFTraceGPUEventsEnabled)
-	{
-		RGXHWPerfFTraceGPUDisable();
-	}
+	RGXHWPerfFTraceGPUDisable(IMG_TRUE);
 
 	OSLockDestroy(hFTraceLock);
 
@@ -1293,7 +1435,7 @@ e1:
 
 PVRSRV_ERROR RGXHWPerfControl(
 		IMG_HANDLE  hDevData,
-		IMG_BOOL    bEnable,
+		IMG_BOOL    bToggle,
 		IMG_UINT64  ui64Mask)
 {
 	PVRSRV_ERROR           eError;
@@ -1312,7 +1454,7 @@ PVRSRV_ERROR RGXHWPerfControl(
 	}
 
 	/* Call the internal server API */
-	eError = PVRSRVRGXCtrlHWPerfKM(psDevData->psRgxDevNode, bEnable, ui64Mask);
+	eError = PVRSRVRGXCtrlHWPerfKM(psDevData->psRgxDevNode, bToggle, ui64Mask);
 	return eError;
 }
 

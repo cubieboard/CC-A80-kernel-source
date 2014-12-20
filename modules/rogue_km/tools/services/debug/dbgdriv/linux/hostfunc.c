@@ -66,7 +66,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "img_types.h"
 #include "pvr_debug.h"
 
-#include "dbgdrvif.h"
+#include "dbgdrvif_srv5.h"
 #include "hostfunc.h"
 #include "dbgdriv.h"
 
@@ -101,23 +101,21 @@ void PVRSRVDebugPrintf	(
 					)
 {
 	IMG_BOOL bTrace;
-#if !defined(__sh__)
 	IMG_CHAR *pszLeafName;
 
-	pszLeafName = (char *)strrchr (pszFileName, '\\');
+	pszLeafName = (char *)strrchr (pszFileName, '/');
 
 	if (pszLeafName)
 	{
 		pszFileName = pszLeafName;
 	}
-#endif /* __sh__ */
 
 	bTrace = (IMG_BOOL)(ui32DebugLevel & DBGPRIV_CALLTRACE) ? IMG_TRUE : IMG_FALSE;
 
 	if (gPVRDebugLevel & ui32DebugLevel)
 	{
 		va_list vaArgs;
-		static char szBuffer[256];
+		static char szBuffer[512];
 
 		va_start (vaArgs, pszFormat);
 
@@ -153,7 +151,7 @@ void PVRSRVDebugPrintf	(
 				}
 				default:
 				{
-					strcpy (szBuffer, "PVR_K:(Unknown message level)");
+					strcpy (szBuffer, "PVR_K:()");
 					break;
 				}
 			}
@@ -299,7 +297,7 @@ IMG_VOID *HostCreateMutex(IMG_VOID)
 
 	return psMutex;
 }
- 
+
 IMG_VOID HostAquireMutex(IMG_VOID * pvMutex)
 {
 	BUG_ON(in_interrupt());

@@ -352,7 +352,7 @@ PVRSRV_ERROR _SCPCommandReady(SCP_COMMAND *psCommand)
 		*/
 		if (psSCPSyncData->ui32Flags & SCP_SYNC_DATA_FENCE)
 		{
-			if (!ServerSyncFenceIsMeet(psSCPSyncData->psSync, psSCPSyncData->ui32Fence))
+			if (!ServerSyncFenceIsMet(psSCPSyncData->psSync, psSCPSyncData->ui32Fence))
 			{
 				return PVRSRV_ERROR_FAILED_DEPENDENCIES;
 			}
@@ -363,22 +363,20 @@ PVRSRV_ERROR _SCPCommandReady(SCP_COMMAND *psCommand)
 	/* Check for the provided acquire fence */
 	if (psCommand->psAcquireFence != IMG_NULL)
 	{
-/*			int err = sync_fence_wait(psCommand->psAcquireFence, 0);*/
-/*			if (!err)*/
-		/* 0 means active. In this case we will retry later again. If the
-		 * return value is an error or a positive number we will close this
-		 * fence and proceed. This makes sure that we are not getting stuck
-		 * here when a fence changes into an error state for whatever reason. */
-		smp_rmb();
-		if (psCommand->psAcquireFence->status == 0)
+		int err = sync_fence_wait(psCommand->psAcquireFence, 0);
+		/* -ETIME means active. In this case we will retry later again. If the
+		 * return value is an error or zero we will close this fence and
+		 * proceed. This makes sure that we are not getting stuck here when a
+		 * fence changes into an error state for whatever reason. */
+		if (err == -ETIME)
 		{
 			return PVRSRV_ERROR_FAILED_DEPENDENCIES;
 		}
 		else
 		{
-			if (psCommand->psAcquireFence->status < 0)
+			if (err)
 			{
-				PVR_LOG(("SCP: Fence wait failed with %d", psCommand->psAcquireFence->status));
+				PVR_LOG(("SCP: Fence wait failed with %d", err));
 				_SCPDumpFence("Acquire Fence", psCommand->psAcquireFence);
 			}
 			/* Put the fence. */

@@ -42,4 +42,3 @@
 pvrsrvkm-y += \
 	services/system/$(PVR_SYSTEM)/sunxi_init.o \
 	services/system/$(PVR_SYSTEM)/sysconfig.o
-

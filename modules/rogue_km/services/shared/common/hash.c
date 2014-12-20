@@ -277,6 +277,14 @@ _Resize (HASH_TABLE *pHash, IMG_UINT32 uNewSize)
 
         if (_Rehash (pHash, pHash->ppBucketTable, pHash->uSize, ppNewTable, uNewSize) != PVRSRV_OK)
 		{
+			/*
+				If we fail the rehash then there is nothing we can do as we've already
+				started to modify some of the entries if we just return FALSE here then
+				we will have dropped some items off the hash table.
+				The only reason the rehash can fail if is there is bug in another part
+				of the driver so in reality we should never hit this
+			*/
+			PVR_ASSERT(IMG_FALSE);
 			return IMG_FALSE;
 		}
 
@@ -369,15 +377,18 @@ HASH_Delete (HASH_TABLE *pHash)
 	IMG_BOOL bDoCheck = IMG_TRUE;
 #if defined(__KERNEL__) && !defined(__QNXNTO__)
 	PVRSRV_DATA *psPVRSRVData = PVRSRVGetPVRSRVData();
-	if (psPVRSRVData->eServicesState != PVRSRV_SERVICES_STATE_OK)
+
+	if (psPVRSRVData != IMG_NULL)
 	{
-		bDoCheck = IMG_FALSE;
+		if (psPVRSRVData->eServicesState != PVRSRV_SERVICES_STATE_OK)
+		{
+			bDoCheck = IMG_FALSE;
+		}
 	}
+
 #endif
 	if (pHash != IMG_NULL)
     {
-		PVR_DPF ((PVR_DBG_MESSAGE, "HASH_Delete"));
-
 		if (bDoCheck)
 		{
 			PVR_ASSERT (pHash->uCount==0);

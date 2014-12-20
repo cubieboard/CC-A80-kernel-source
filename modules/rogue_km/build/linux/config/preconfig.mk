@@ -74,6 +74,9 @@ _CXX     := $(CROSS_COMPILE)$(CXX)
 HOST_CC  ?= gcc
 
 # Work out if we are targeting ARM before we start tweaking _CC.
+TARGETING_AARCH64 := $(shell \
+ $(_CC) -dM -E - </dev/null | grep -q __aarch64__ && echo 1)
+ 
 TARGETING_ARM := $(shell \
  $(_CC) -dM -E - </dev/null | grep __arm__ >/dev/null 2>&1 && echo 1)
 
@@ -112,7 +115,7 @@ $(foreach _o,SYS_CFLAGS SYS_CXXFLAGS SYS_INCLUDES SYS_EXE_LDFLAGS SYS_LIB_LDFLAG
 # Check for words in EXCLUDED_APIS that aren't understood by the
 # common/apis/*.mk files. This should be kept in sync with all the tests on
 # EXCLUDED_APIS in those files
-_excludable_apis := opencl opengl opengles1 opengles3 openrl unittests rscompute scripts composerhal servicestools hwperftools testchiptools rogue2d
+_excludable_apis := opencl opengl opengles1 opengles3 openrl unittests rscompute scripts composerhal servicestools hwperftools testchiptools rogue2d memtrackhal camerahal
 _excluded_apis := $(subst $(comma),$(space),$(EXCLUDED_APIS))
 
 _unrecognised := $(strip $(filter-out $(_excludable_apis),$(_excluded_apis)))

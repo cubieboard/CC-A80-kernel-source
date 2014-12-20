@@ -110,6 +110,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define RGX_BIF_PM_VIRTUAL_PAGE_ALIGNSHIFT		(14)
 #define RGX_BIF_PM_VIRTUAL_PAGE_SIZE			(1 << RGX_BIF_PM_VIRTUAL_PAGE_ALIGNSHIFT)
 
+#if defined(RGX_FEATURE_META_DMA_CHANNEL_COUNT)
+#define RGX_FEATURE_DMA            (1)
+#define RGXFW_DMA_CH_PRIO_DEFAULT ( (RGXFW_DMA_PRIORITY_0 << RGX_CR_DMA_CONTROL_CH0_PRIORITY_SHIFT) | \
+									(RGXFW_DMA_PRIORITY_1 << RGX_CR_DMA_CONTROL_CH1_PRIORITY_SHIFT) )
+#endif
+
 /******************************************************************************
  * WA HWBRNs
  *****************************************************************************/
@@ -125,7 +131,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #endif /* FIX_HW_BRN_36492 */
 
-#define DPX_MAX_RAY_CONTEXTS 4 /* FIXME should this be in dpx file? */
+#define DPX_MAX_RAY_CONTEXTS 4 /* */
 
 #if !defined(RGX_FEATURE_SLC_SIZE_IN_BYTES)
 #define RGX_FEATURE_SLC_SIZE_IN_BYTES (RGX_FEATURE_SLC_SIZE_IN_KILOBYTES * 1024)

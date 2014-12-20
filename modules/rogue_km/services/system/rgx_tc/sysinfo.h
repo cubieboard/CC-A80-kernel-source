@@ -48,7 +48,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define SYS_RGX_DEV_DEVICE_ID	(0x1CF2)
 
 /*!< System specific poll/timeout details */
+#if defined(VIRTUAL_PLATFORM)
+#define MAX_HW_TIME_US                           (5000000)
+#else
 #define MAX_HW_TIME_US                           (500000)
+#endif
+
 #define DEVICES_WATCHDOG_POWER_ON_SLEEP_TIMEOUT  (10000)
 #define DEVICES_WATCHDOG_POWER_OFF_SLEEP_TIMEOUT (3600000)
 #define WAIT_TRY_COUNT                           (10000)

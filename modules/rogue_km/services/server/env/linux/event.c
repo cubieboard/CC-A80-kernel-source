@@ -61,11 +61,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <asm/uaccess.h>
 
 #include "img_types.h"
+#include "pvrsrv_error.h"
 #include "allocmem.h"
 #include "mm.h"
 #include "mmap.h"
 #include "env_data.h"
-#include "mutex.h"
 #include "driverlock.h"
 #include "event.h"
 #include "pvr_debug.h"
@@ -329,17 +329,17 @@ PVRSRV_ERROR LinuxEventObjectWait(IMG_HANDLE hOSEventObject, IMG_UINT32 ui32MSTi
 		 * 'release before deschedule' behaviour. Some threads choose not to
 		 * hold the bridge lock in their implementation.
 		 */
-		bReleasePVRLock = (OSGetReleasePVRLock() && LinuxIsLockedByMeMutex(&gPVRSRVLock));
+		bReleasePVRLock = (OSGetReleasePVRLock() && mutex_is_locked(&gPVRSRVLock) && current == gPVRSRVLock.owner);
 		if (bReleasePVRLock == IMG_TRUE)
 		{
-			LinuxUnLockMutex(&gPVRSRVLock);
+			mutex_unlock(&gPVRSRVLock);
 		}
 
 		ui32TimeOutJiffies = (IMG_UINT32)schedule_timeout((IMG_INT32)ui32TimeOutJiffies);
 
 		if (bReleasePVRLock == IMG_TRUE)
 		{
-			LinuxLockMutex(&gPVRSRVLock);
+			mutex_lock(&gPVRSRVLock);
 		}
 
 #if defined(DEBUG)

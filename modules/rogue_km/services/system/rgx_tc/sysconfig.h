@@ -55,7 +55,11 @@ static RGX_TIMING_INFORMATION gsRGXTimingInfo =
 	/* ui32CoreClockSpeed */
 	0,	/* Initialize to 0, real value will be set in PCIInitDev() */
 	/* bEnableActivePM */ 
+#if defined (VIRTUAL_PLATFORM)
 	IMG_FALSE,
+#else
+	IMG_TRUE,
+#endif
 	/* bEnableRDPowIsland */ 
 	IMG_FALSE,
 	/* ui32ActivePMLatencyms */

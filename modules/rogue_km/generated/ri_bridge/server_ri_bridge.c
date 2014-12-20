@@ -103,9 +103,9 @@ PVRSRVBridgeRIWritePMREntry(IMG_UINT32 ui32BridgeID,
 
 
 
-	
+	if (psRIWritePMREntryIN->ui32TextASize != 0)
 	{
-		uiTextAInt = OSAllocMem(RI_MAX_TEXT_LEN * sizeof(IMG_CHAR));
+		uiTextAInt = OSAllocMem(psRIWritePMREntryIN->ui32TextASize * sizeof(IMG_CHAR));
 		if (!uiTextAInt)
 		{
 			psRIWritePMREntryOUT->eError = PVRSRV_ERROR_OUT_OF_MEMORY;
@@ -115,9 +115,9 @@ PVRSRVBridgeRIWritePMREntry(IMG_UINT32 ui32BridgeID,
 	}
 
 			/* Copy the data over */
-			if ( !OSAccessOK(PVR_VERIFY_READ, (IMG_VOID*) psRIWritePMREntryIN->puiTextA, RI_MAX_TEXT_LEN * sizeof(IMG_CHAR))
+			if ( !OSAccessOK(PVR_VERIFY_READ, (IMG_VOID*) psRIWritePMREntryIN->puiTextA, psRIWritePMREntryIN->ui32TextASize * sizeof(IMG_CHAR))
 				|| (OSCopyFromUser(NULL, uiTextAInt, psRIWritePMREntryIN->puiTextA,
-				RI_MAX_TEXT_LEN * sizeof(IMG_CHAR)) != PVRSRV_OK) )
+				psRIWritePMREntryIN->ui32TextASize * sizeof(IMG_CHAR)) != PVRSRV_OK) )
 			{
 				psRIWritePMREntryOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
 
@@ -148,6 +148,7 @@ PVRSRVBridgeRIWritePMREntry(IMG_UINT32 ui32BridgeID,
 	psRIWritePMREntryOUT->eError =
 		RIWritePMREntryKM(
 					psPMRHandleInt,
+					psRIWritePMREntryIN->ui32TextASize,
 					uiTextAInt,
 					psRIWritePMREntryIN->uiLogicalSize);
 
@@ -177,9 +178,9 @@ PVRSRVBridgeRIWriteMEMDESCEntry(IMG_UINT32 ui32BridgeID,
 
 
 
-	
+	if (psRIWriteMEMDESCEntryIN->ui32TextBSize != 0)
 	{
-		uiTextBInt = OSAllocMem(RI_MAX_TEXT_LEN * sizeof(IMG_CHAR));
+		uiTextBInt = OSAllocMem(psRIWriteMEMDESCEntryIN->ui32TextBSize * sizeof(IMG_CHAR));
 		if (!uiTextBInt)
 		{
 			psRIWriteMEMDESCEntryOUT->eError = PVRSRV_ERROR_OUT_OF_MEMORY;
@@ -189,9 +190,9 @@ PVRSRVBridgeRIWriteMEMDESCEntry(IMG_UINT32 ui32BridgeID,
 	}
 
 			/* Copy the data over */
-			if ( !OSAccessOK(PVR_VERIFY_READ, (IMG_VOID*) psRIWriteMEMDESCEntryIN->puiTextB, RI_MAX_TEXT_LEN * sizeof(IMG_CHAR))
+			if ( !OSAccessOK(PVR_VERIFY_READ, (IMG_VOID*) psRIWriteMEMDESCEntryIN->puiTextB, psRIWriteMEMDESCEntryIN->ui32TextBSize * sizeof(IMG_CHAR))
 				|| (OSCopyFromUser(NULL, uiTextBInt, psRIWriteMEMDESCEntryIN->puiTextB,
-				RI_MAX_TEXT_LEN * sizeof(IMG_CHAR)) != PVRSRV_OK) )
+				psRIWriteMEMDESCEntryIN->ui32TextBSize * sizeof(IMG_CHAR)) != PVRSRV_OK) )
 			{
 				psRIWriteMEMDESCEntryOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
 
@@ -222,6 +223,7 @@ PVRSRVBridgeRIWriteMEMDESCEntry(IMG_UINT32 ui32BridgeID,
 	psRIWriteMEMDESCEntryOUT->eError =
 		RIWriteMEMDESCEntryKM(
 					psPMRHandleInt,
+					psRIWriteMEMDESCEntryIN->ui32TextBSize,
 					uiTextBInt,
 					psRIWriteMEMDESCEntryIN->uiOffset,
 					psRIWriteMEMDESCEntryIN->uiSize,

@@ -38,7 +38,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ### ###########################################################################
 
-$(TARGET_OUT)/kbuild/Makefile: $(MAKE_TOP)/kbuild/Makefile.template
+$(TARGET_PRIMARY_OUT)/kbuild/Makefile: $(MAKE_TOP)/kbuild/Makefile.template
 	@[ ! -e $(dir $@) ] && mkdir -p $(dir $@) || true
 	$(CP) -f $< $@
 
@@ -55,30 +55,31 @@ kbuild_check:
 	@: $(foreach _m,$(ALL_KBUILD_MODULES),$(if $(wildcard $(abspath $(INTERNAL_KBUILD_MAKEFILE_FOR_$(_m)))),,$(error In makefile $(INTERNAL_MAKEFILE_FOR_MODULE_$(_m)): Module $(_m) requires kbuild makefile $(INTERNAL_KBUILD_MAKEFILE_FOR_$(_m)), which is missing)))
 	@: $(if $(filter-out command line override,$(origin build)),,$(error Overriding $$(build) (with "make build=...") will break kbuild))
 
-# Services server headers are generated as part of running the bridge
-# generator, which might be included in KM code. So as well as depending on
-# the kbuild Makefile, we need to make kbuild also depend on each bridge
-# module (including direct bridges), so that 'make kbuild' in a clean tree
-# works.
-kbuild: kbuild_check $(TARGET_OUT)/kbuild/Makefile $(BRIDGES) $(DIRECT_BRIDGES)
-	@$(MAKE) -Rr --no-print-directory -C $(KERNELDIR) M=$(abspath $(TARGET_OUT)/kbuild) \
+kbuild: kbuild_check $(TARGET_PRIMARY_OUT)/kbuild/Makefile
+	$(if $(V),,@)$(MAKE) -Rr --no-print-directory -C $(KERNELDIR) \
+		M=$(abspath $(TARGET_PRIMARY_OUT)/kbuild) \
 		INTERNAL_KBUILD_MAKEFILES="$(INTERNAL_KBUILD_MAKEFILES)" \
 		INTERNAL_KBUILD_OBJECTS="$(INTERNAL_KBUILD_OBJECTS)" \
 		INTERNAL_EXTRA_KBUILD_OBJECTS="$(INTERNAL_EXTRA_KBUILD_OBJECTS)" \
+		BRIDGE_SOURCE_ROOT=$(abspath $(BRIDGE_SOURCE_ROOT)) \
+		TARGET_PRIMARY_ARCH=$(TARGET_PRIMARY_ARCH) \
 		CROSS_COMPILE="$(CCACHE) $(KERNEL_CROSS_COMPILE)" \
 		EXTRA_CFLAGS="$(ALL_KBUILD_CFLAGS)" \
 		V=$(V) W=$(W) \
 		CHECK="$(patsubst @%,%,$(CHECK))" $(if $(CHECK),C=1,) \
 		TOP=$(TOP)
-	@for kernel_module in $(addprefix $(TARGET_OUT)/kbuild/,$(INTERNAL_KBUILD_OBJECTS:.o=.ko)); do \
-		cp $$kernel_module $(TARGET_OUT); \
+	@for kernel_module in $(addprefix $(TARGET_PRIMARY_OUT)/kbuild/,$(INTERNAL_KBUILD_OBJECTS:.o=.ko)); do \
+		cp $$kernel_module $(TARGET_PRIMARY_OUT); \
 	done
 
-kbuild_clean: kbuild_check $(TARGET_OUT)/kbuild/Makefile
-	@$(MAKE) -Rr --no-print-directory -C $(KERNELDIR) M=$(abspath $(TARGET_OUT)/kbuild) \
+kbuild_clean: kbuild_check $(TARGET_PRIMARY_OUT)/kbuild/Makefile
+	$(if $(V),,@)$(MAKE) -Rr --no-print-directory -C $(KERNELDIR) \
+		M=$(abspath $(TARGET_PRIMARY_OUT)/kbuild) \
 		INTERNAL_KBUILD_MAKEFILES="$(INTERNAL_KBUILD_MAKEFILES)" \
 		INTERNAL_KBUILD_OBJECTS="$(INTERNAL_KBUILD_OBJECTS)" \
 		INTERNAL_EXTRA_KBUILD_OBJECTS="$(INTERNAL_EXTRA_KBUILD_OBJECTS)" \
+		BRIDGE_SOURCE_ROOT=$(abspath $(BRIDGE_SOURCE_ROOT)) \
+		TARGET_PRIMARY_ARCH=$(TARGET_PRIMARY_ARCH) \
 		CROSS_COMPILE="$(CCACHE) $(KERNEL_CROSS_COMPILE)" \
 		EXTRA_CFLAGS="$(ALL_KBUILD_CFLAGS)" \
 		V=$(V) W=$(W) \

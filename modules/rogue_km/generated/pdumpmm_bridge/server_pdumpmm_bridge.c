@@ -118,7 +118,8 @@ PVRSRVBridgePMRPDumpLoadMem(IMG_UINT32 ui32BridgeID,
 					psPMRInt,
 					psPMRPDumpLoadMemIN->uiOffset,
 					psPMRPDumpLoadMemIN->uiSize,
-					psPMRPDumpLoadMemIN->ui32PDumpFlags);
+					psPMRPDumpLoadMemIN->ui32PDumpFlags,
+					psPMRPDumpLoadMemIN->bbZero);
 
 
 

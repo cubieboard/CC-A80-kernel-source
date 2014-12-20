@@ -53,8 +53,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define	PVR_MOD_STATIC	static
 #endif
 
-#if defined(PVR_LDM_PLATFORM_PRE_REGISTERED) && !defined(NO_HARDWARE)
-// #define PVR_USE_PRE_REGISTERED_PLATFORM_DEV
+#if defined(PVR_LDM_PLATFORM_PRE_REGISTERED)
+#define PVR_USE_PRE_REGISTERED_PLATFORM_DEV
 #endif
 
 #include <linux/init.h>
@@ -62,6 +62,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/dma-mapping.h>
+#include <linux/delay.h>
+
 
 #if defined(SUPPORT_DRM_AUTH_IMPORT)
 #include <linux/list.h>
@@ -83,11 +85,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "img_defs.h"
 #include "kerneldisplay.h"
-#include "mutils.h"
 #include "mm.h"
 #include "allocmem.h"
 #include "mmap.h"
-#include "mutex.h"
 #include "pvr_debug.h"
 #include "srvkm.h"
 #include "connection_server.h"
@@ -122,7 +122,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvr_gputrace.h"
 #endif
 
-#if defined(SUPPORT_KERNEL_HWPERF)
+#if defined(SUPPORT_KERNEL_HWPERF) || defined(SUPPORT_SHARED_SLC)
 #include "rgxapi_km.h"
 #endif
 
@@ -204,8 +204,9 @@ EXPORT_SYMBOL(RGXHWPerfAcquireData);
 EXPORT_SYMBOL(RGXHWPerfReleaseData);
 #endif
 
-extern PVRSRV_ERROR RgxResume(IMG_VOID);
-extern PVRSRV_ERROR RgxSuspend(IMG_VOID);
+#if defined(SUPPORT_SHARED_SLC)
+EXPORT_SYMBOL(RGXInitSLC);
+#endif
 
 #if !defined(SUPPORT_DRM)
 /*
@@ -230,15 +231,18 @@ static int PVRSRVRelease(struct inode* pInode, struct file* pFile);
 
 static struct file_operations pvrsrv_fops =
 {
-	.owner=THIS_MODULE,
-	.unlocked_ioctl = PVRSRV_BridgeDispatchKM,
-	.open=PVRSRVOpen,
-	.release=PVRSRVRelease,
-	.mmap=MMapPMR,
+	.owner		= THIS_MODULE,
+	.unlocked_ioctl	= PVRSRV_BridgeDispatchKM,
+#if defined(CONFIG_COMPAT)
+	.compat_ioctl	= PVRSRV_BridgeCompatDispatchKM,
+#endif
+	.open		= PVRSRVOpen,
+	.release	= PVRSRVRelease,
+	.mmap		= MMapPMR,
 };
 #endif	/* !defined(SUPPORT_DRM) */
 
-PVRSRV_LINUX_MUTEX gPVRSRVLock;
+struct mutex gPVRSRVLock;
 
 #if defined(SUPPORT_DRM_AUTH_IMPORT)
 static LIST_HEAD(sDRMAuthListHead);
@@ -346,7 +350,7 @@ static struct platform_device_info powervr_device_info =
 #endif	/* defined(MODULE) && !defined(PVR_USE_PRE_REGISTERED_PLATFORM_DEV) */
 #endif	/* defined(LDM_PLATFORM) */
 
-static IMG_BOOL bCalledSysInit;
+static IMG_BOOL bCalledSysInit = IMG_FALSE;
 static IMG_BOOL	bDriverProbeSucceeded = IMG_FALSE;
 
 /*!
@@ -371,22 +375,25 @@ static int PVRSRVSystemInit(LDM_DEV *pDevice)
 {
 	PVR_TRACE(("PVRSRVSystemInit (pDevice=%p)", pDevice));
 
+//	ssleep(30);
+
 	/* PVRSRVInit is only designed to be called once */
 	if (bCalledSysInit == IMG_FALSE)
 	{
-#if !defined(LDM_PLATFORM) || (LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0))
-#if !defined(SUPPORT_DRM)
-	gpsPVRLDMDev = pDevice;
-#else	/* !defined(SUPPORT_DRM) */
+#if defined(SUPPORT_DRM)
+
 #if defined(LDM_PLATFORM)
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0))
-	gpsPVRLDMDev = pDevice->platformdev;
+		gpsPVRLDMDev = pDevice->platformdev;
+#elif defined(LDM_PCI)
+		gpsPVRLDMDev = pDevice->pdev;
+#else
+#error Only platform and pci devices are supported
 #endif
-#else	/* defined(LDM_PLATFORM) */
-	gpsPVRLDMDev = pDevice->pdev;
-#endif	/* defined(LDM_PLATFORM) */
-#endif	/* !defined(SUPPORT_DRM) */
-#endif	/* !defined(LDM_PLATFORM) || (LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0)) */
+
+#else /* SUPPORT_DRM */
+		gpsPVRLDMDev = pDevice;
+#endif
+
 		bCalledSysInit = IMG_TRUE;
 
 		if (PVRSRVInit() != PVRSRV_OK)
@@ -488,10 +495,14 @@ static void __devexit PVRSRVDriverRemove(LDM_DEV *pDevice)
 
 #if defined(SUPPORT_DRM)
 #if defined(LDM_PLATFORM)
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0))
 	drm_platform_exit(&sPVRDRMDriver, pDevice);
+#else
+	drm_put_dev(platform_get_drvdata(pDevice));
 #endif
+#endif	/* defined(LDM_PLATFORM) */
 #if defined(LDM_PCI)
-	drm_put_dev(gpsPVRDRMDev);
+	drm_put_dev(pci_get_drvdata(pDevice));
 #endif
 #else	/* defined(SUPPORT_DRM) */
 	PVRSRVSystemDeInit();
@@ -501,7 +512,7 @@ static void __devexit PVRSRVDriverRemove(LDM_DEV *pDevice)
 #endif
 }
 
-static PVRSRV_LINUX_MUTEX gsPMMutex;
+static struct mutex gsPMMutex;
 static IMG_BOOL bDriverIsSuspended;
 static IMG_BOOL bDriverIsShutdown;
 
@@ -525,7 +536,7 @@ static void PVRSRVDriverShutdown(LDM_DEV *pDevice)
 {
 	PVR_TRACE(("PVRSRVDriverShutdown (pDevice=%p)", pDevice));
 
-	LinuxLockMutex(&gsPMMutex);
+	mutex_lock(&gsPMMutex);
 
 	if (!bDriverIsShutdown && !bDriverIsSuspended)
 	{
@@ -534,7 +545,7 @@ static void PVRSRVDriverShutdown(LDM_DEV *pDevice)
 		 * processes trying to use the driver after it has been
 		 * shutdown.
 		 */
-		LinuxLockMutex(&gPVRSRVLock);
+		mutex_lock(&gPVRSRVLock);
 
 		(void) PVRSRVSetPowerStateKM(PVRSRV_SYS_POWER_STATE_OFF, IMG_TRUE);
 	}
@@ -542,7 +553,7 @@ static void PVRSRVDriverShutdown(LDM_DEV *pDevice)
 	bDriverIsShutdown = IMG_TRUE;
 
 	/* The bridge mutex is held on exit */
-	LinuxUnLockMutex(&gsPMMutex);
+	mutex_unlock(&gsPMMutex);
 }
 
 /*!
@@ -565,11 +576,11 @@ static int PVRSRVDriverSuspend(struct device *pDevice)
 
 	PVR_TRACE(( "PVRSRVDriverSuspend (pDevice=%p)", pDevice));
 
-	LinuxLockMutex(&gsPMMutex);
+	mutex_lock(&gsPMMutex);
 
 	if (!bDriverIsSuspended && !bDriverIsShutdown)
 	{
-		LinuxLockMutex(&gPVRSRVLock);
+		mutex_lock(&gPVRSRVLock);
 
 		if (PVRSRVSetPowerStateKM(PVRSRV_SYS_POWER_STATE_OFF, IMG_TRUE) == PVRSRV_OK)
 		{
@@ -578,15 +589,13 @@ static int PVRSRVDriverSuspend(struct device *pDevice)
 		}
 		else
 		{
-			LinuxUnLockMutex(&gPVRSRVLock);
+			mutex_unlock(&gPVRSRVLock);
 			res = -EINVAL;
 		}
 	}
 
-	LinuxUnLockMutex(&gsPMMutex);
-	
-	RgxSuspend();
-	
+	mutex_unlock(&gsPMMutex);
+
 	return res;
 }
 
@@ -608,19 +617,17 @@ static int PVRSRVDriverSuspend(struct device *pDevice)
 static int PVRSRVDriverResume(struct device *pDevice)
 {
 	int res = 0;
-	
-	RgxResume();
-	
+
 	PVR_TRACE(("PVRSRVDriverResume (pDevice=%p)", pDevice));
 
-	LinuxLockMutex(&gsPMMutex);
+	mutex_lock(&gsPMMutex);
 
 	if (bDriverIsSuspended && !bDriverIsShutdown)
 	{
 		if (PVRSRVSetPowerStateKM(PVRSRV_SYS_POWER_STATE_ON, IMG_TRUE) == PVRSRV_OK)
 		{
 			bDriverIsSuspended = IMG_FALSE;
-			LinuxUnLockMutex(&gPVRSRVLock);
+			mutex_unlock(&gPVRSRVLock);
 		}
 		else
 		{
@@ -629,7 +636,7 @@ static int PVRSRVDriverResume(struct device *pDevice)
 		}
 	}
 
-	LinuxUnLockMutex(&gsPMMutex);
+	mutex_unlock(&gsPMMutex);
 
 	return res;
 }
@@ -667,7 +674,7 @@ static int PVRSRVOpen(struct inode unref__ * pInode, struct file *pFile)
 		return iRet;
 	}
 
-	LinuxLockMutex(&gPVRSRVLock);
+	mutex_lock(&gPVRSRVLock);
 
 	psPrivateData = OSAllocMem(sizeof(PVRSRV_FILE_PRIVATE_DATA));
 
@@ -694,11 +701,11 @@ static int PVRSRVOpen(struct inode unref__ * pInode, struct file *pFile)
 	list_add_tail(&psPrivateData->sDRMAuthListItem, &sDRMAuthListHead);
 #endif
 	PRIVATE_DATA(pFile) = psPrivateData;
-	LinuxUnLockMutex(&gPVRSRVLock);
+	mutex_unlock(&gPVRSRVLock);
 	return 0;
 
 err_unlock:	
-	LinuxUnLockMutex(&gPVRSRVLock);
+	mutex_unlock(&gPVRSRVLock);
 	module_put(THIS_MODULE);
 	return iRet;
 }
@@ -730,7 +737,7 @@ static int PVRSRVRelease(struct inode unref__ * pInode, struct file *pFile)
 {
 	PVRSRV_FILE_PRIVATE_DATA *psPrivateData;
 
-	LinuxLockMutex(&gPVRSRVLock);
+	mutex_lock(&gPVRSRVLock);
 
 #if defined(SUPPORT_DRM)
 	psPrivateData = (PVRSRV_FILE_PRIVATE_DATA *)pvPrivData;
@@ -751,7 +758,7 @@ static int PVRSRVRelease(struct inode unref__ * pInode, struct file *pFile)
 #endif
 	}
 
-	LinuxUnLockMutex(&gPVRSRVLock);
+	mutex_unlock(&gPVRSRVLock);
 	module_put(THIS_MODULE);
 #if defined(SUPPORT_DRM)
 	return;
@@ -787,7 +794,7 @@ static IMG_BOOL PVRDRMCheckAuthentication(struct drm_file *pFile, IMG_PID uPID)
 {
 	PVRSRV_FILE_PRIVATE_DATA *psPrivateData;
 
-	BUG_ON(!LinuxIsLockedMutex(&gPVRSRVLock));
+	BUG_ON(!mutex_is_locked(&gPVRSRVLock));
 
 	list_for_each_entry(psPrivateData, &sDRMAuthListHead, sDRMAuthListItem)
 	{
@@ -875,11 +882,9 @@ check_auth_exit:
 
 *****************************************************************************/
 
-/* FIXME: This is declared here to save creating a new header which
-          should be removed soon anyway as bridge gen should be providing
-          this interface */
-PVRSRV_ERROR LinuxBridgeInit(IMG_VOID);
-IMG_VOID LinuxBridgeDeInit(IMG_VOID);
+
+PVRSRV_ERROR LinuxBridgeInit(void);
+void LinuxBridgeDeInit(void);
 
 static int __init PVRCore_Init(void)
 {
@@ -909,9 +914,9 @@ static int __init PVRCore_Init(void)
 #endif
 #endif
 
-	LinuxInitMutex(&gsPMMutex);
+	mutex_init(&gsPMMutex);
 
-	LinuxInitMutex(&gPVRSRVLock);
+	mutex_init(&gPVRSRVLock);
 
 	error = PVRDebugFSInit();
 	if (error != 0)
@@ -935,8 +940,6 @@ static int __init PVRCore_Init(void)
 		goto init_failed;
 	}
 
-	PVRLinuxMUtilsInit();
-
 	LinuxBridgeInit();
 
 	PVRMMapInit();
@@ -949,7 +952,7 @@ static int __init PVRCore_Init(void)
 		goto init_failed;
 	}
 
-#if defined(MODULE) //&& !defined(PVR_USE_PRE_REGISTERED_PLATFORM_DEV)
+#if defined(MODULE) && !defined(PVR_USE_PRE_REGISTERED_PLATFORM_DEV)
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0))
 	error = platform_device_register(&powervr_device);
 #else

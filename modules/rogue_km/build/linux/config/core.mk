@@ -191,24 +191,14 @@ include ../defs.mk
 PVR_BUILD_DIR := $(notdir $(abspath .))
 $(call directory-must-exist,$(TOP)/build/linux/$(PVR_BUILD_DIR))
 
-# ARCH_IDENT is used where there is a need to distinguish between build
-# components for different variants of the same architecture. For example,
-# for x86 builds, there is a need to distinguish between the output
-# directories, and cache tarballs, for x86_64 and i386 driver builds.
-#
-ARCH_IDENT :=
-ifeq ($(ARCH),i386)
-ARCH_IDENT := $(ARCH)
-endif
-
 # Output directory for configuration, object code,
 # final programs/libraries, and install/rc scripts.
 #
 BUILD        ?= release
-ifneq ($(filter $(WINDOW_SYSTEM),xorg wayland ews nullws),)
-OUT          ?= $(TOP)/binary_$(PVR_BUILD_DIR)$(if $(ARCH_IDENT),_$(ARCH_IDENT))_$(WINDOW_SYSTEM)_$(BUILD)
+ifneq ($(filter $(WINDOW_SYSTEM),xorg wayland nullws nulldrmws ews_drm),)
+OUT          ?= $(TOP)/binary_$(PVR_BUILD_DIR)_$(WINDOW_SYSTEM)_$(BUILD)
 else
-OUT          ?= $(TOP)/binary_$(PVR_BUILD_DIR)$(if $(ARCH_IDENT),_$(ARCH_IDENT))_$(BUILD)
+OUT          ?= $(TOP)/binary_$(PVR_BUILD_DIR)_$(BUILD)
 endif
 override OUT := $(if $(filter /%,$(OUT)),$(OUT),$(TOP)/$(OUT))
 
@@ -324,9 +314,21 @@ MAX_POOL_PAGES ?= 10240
 # components list. Make sure these are defined early enough to make this
 # possible.
 #
-SUPPORT_DISPLAY_CLASS ?= 0
+ifeq ($(SUPPORT_DRM),1)
+SUPPORT_DISPLAY_CLASS := 0
+else
+ifeq ($(SUPPORT_ADF),1)
+SUPPORT_DISPLAY_CLASS := 0
+else
+SUPPORT_DISPLAY_CLASS ?= 1
+endif
+endif
+
 SUPPORT_RAY_TRACING := \
  $(shell grep -qw RGX_FEATURE_RAY_TRACING $(RGX_BNC_CONFIG_KM) && echo 1)
+ 
+SUPPORT_DMA :=\
+ $(shell grep -qw RGX_FEATURE_META_DMA_CHANNEL_COUNT $(RGX_BNC_CONFIG_KM) && echo 1)
 
 # Default place for shared libraries
 SHLIB_DESTDIR ?= /usr/lib
@@ -335,6 +337,9 @@ SHLIB_DESTDIR ?= /usr/lib
 # - components.mk is a per-build file that specifies the components that are
 #   to be built
 -include components.mk
+
+# Set up the host and target compiler.
+include ../config/compiler.mk
 
 # PDUMP needs extra components
 #
@@ -407,10 +412,6 @@ endif
 
 endif # !Neutrino
 
-ifneq ($(ARCH_IDENT),)
-$(eval $(call UserConfigMake,ARCH_IDENT,$(ARCH_IDENT)))
-endif
-
 $(eval $(call UserConfigC,PVRSRV_MODULE_BASEDIR,\"$(PVRSRV_MODULE_BASEDIR)\"))
 
 # Ideally configured by platform Makefiles, as necessary
@@ -443,6 +444,12 @@ $(eval $(call UserConfigC,OPK_FALLBACK,"\"$(OPK_FALLBACK)\""))
 
 $(eval $(call BothConfigMake,PVR_SYSTEM,$(PVR_SYSTEM)))
 
+ifeq ($(MESA_EGL),1)
+$(eval $(call UserConfigMake,LIB_IMG_EGL,pvr_dri_if))
+else
+$(eval $(call UserConfigMake,LIB_IMG_EGL,IMGegl))
+endif
+
 # Build-type dependent options
 #
 $(eval $(call BothConfigMake,BUILD,$(BUILD)))
@@ -458,7 +465,6 @@ $(eval $(call KernelConfigC,DEBUG_HANDLEALLOC_KM,))
 $(eval $(call UserConfigC,DLL_METRIC,1))
 $(eval $(call TunableBothConfigC,RGXFW_ALIGNCHECKS,1))
 $(eval $(call TunableBothConfigC,PVRSRV_DEBUG_CCB_MAX,))
-$(eval $(call TunableBothConfigC,RGX_HWPERF_SLC_PERF,))
 else ifeq ($(BUILD),release)
 $(eval $(call BothConfigC,RELEASE,))
 $(eval $(call TunableBothConfigMake,DEBUGLINK,1))
@@ -470,6 +476,8 @@ $(eval $(call TunableBothConfigMake,DEBUGLINK,1))
 else
 $(error BUILD= must be either debug, release or timing)
 endif
+
+
 
 # User-configurable options
 #
@@ -533,7 +541,6 @@ $(eval $(call TunableKernelConfigC,PVR_LINUX_MISR_USING_PRIVATE_WORKQUEUE,))
 $(eval $(call TunableKernelConfigC,PVR_LINUX_TIMERS_USING_WORKQUEUES,))
 $(eval $(call TunableKernelConfigC,PVR_LINUX_TIMERS_USING_SHARED_WORKQUEUE,))
 $(eval $(call TunableKernelConfigC,PVR_LDM_PLATFORM_PRE_REGISTERED,))
-$(eval $(call TunableKernelConfigC,PVR_LDM_PLATFORM_PRE_REGISTERED_DEV,))
 $(eval $(call TunableKernelConfigC,PVR_LDM_DRIVER_REGISTRATION_NAME,"\"$(PVRSRV_MODNAME)\""))
 $(eval $(call TunableBothConfigC,LDM_PLATFORM,))
 $(eval $(call TunableBothConfigC,LDM_PCI,))
@@ -560,9 +567,11 @@ $(eval $(call TunableBothConfigC,SUPPORT_PVR_VALGRIND,))
 
 
 
+
 ifneq ($(SUPPORT_ANDROID_PLATFORM),1)
   endif
 
+  
 $(eval $(call TunableBothConfigMake,CACHEFLUSH_TYPE,CACHEFLUSH_GENERIC))
 $(eval $(call TunableBothConfigMake,PDUMP,))
 $(eval $(call TunableBothConfigMake,SUPPORT_INSECURE_EXPORT,1))
@@ -588,16 +597,19 @@ $(eval $(call UserConfigC,EGL_BASENAME_SUFFIX,\"$(EGL_BASENAME_SUFFIX)\"))
 
 
 
+
 $(eval $(call TunableBothConfigC,PVR_TESTING_UTILS,,\
 Enable this to build in support for testing the PVR Transport Layer API._\
 ))
 
 
+TQ_CAPTURE_PARAMS ?= 1
+
 $(eval $(call TunableBothConfigC,TDMETACODE,))
 $(eval $(call TunableBothConfigC,PVR_DPF_ADHOC_DEBUG_ON,))
 $(eval $(call TunableBothConfigC,RGXFW_DEBUG_LOG_GROUP,))
-$(eval $(call TunableBothConfigC,RGXFW_POWMON_TIMERCTL,))
 $(eval $(call TunableBothConfigC,SUPPORT_POWMON_WO_GPIO_PIN,))
+
 
 $(eval $(call TunableKernelConfigMake,PVR_HANDLE_BACKEND,generic,\
 Specifies the back-end that should be used$(comma) by the Services kernel handle_\
@@ -607,9 +619,11 @@ interface$(comma) to allocate handles. The available backends are:_\
 ))
 
 
-$(eval $(call TunableKernelConfigC,PVRSRV_ENABLE_PROCESS_STATS,1,\
+$(eval $(call TunableBothConfigC,PVRSRV_ENABLE_PROCESS_STATS,1,\
 Enable Process Statistics via DebugFS._\
 ))
+
+$(eval $(call TunableKernelConfigC,SUPPORT_SHARED_SLC,,))
 
 # PVR_RI_DEBUG is set to enable RI annotation of devmem allocations
 # This is enabled by default for debug builds.
@@ -620,18 +634,22 @@ Enable Resource Information (RI) debug. This logs details of_\
 resource allocations with annotation to help indicate their use._\
 ))
 
-$(eval $(call TunableBothConfigC,PVRSRV_ENABLE_MEMORY_STATS,,\
+$(eval $(call TunableKernelConfigC,PVRSRV_ENABLE_MEMORY_STATS,,\
 Enable Memory allocations to be recorded and published via Process Statistics._\
 ))
 
-$(eval $(call TunableBothConfigC,PVRSRV_MEMORY_STATS_LITE,,\
-Logs Memory allocations as byte count only (no per-alloc records) via Process Statistics._\
-))
 $(eval $(call TunableKernelConfigC,PVRSRV_ENABLE_FW_TRACE_DEBUGFS,,\
 Enable automatic decoding of Firmware Trace via DebugFS._\
 ))
 
 $(eval $(call TunableKernelConfigC,PVR_LINUX_PYSMEM_MAX_POOL_PAGES,"$(MAX_POOL_PAGES)"))
+$(eval $(call TunableKernelConfigC,PVR_LINUX_VMALLOC_ALLOCATION_THRESHOLD, 16384 ))
+
+
+# Tunable RGX_MAX_TA_SYNCS / RGX_MAX_3D_SYNCS to increase the size of sync array in the DDK
+# If defined, these macros take up the values as defined in the environment,
+# Else, the default value is taken up as defined in include/rgxapi.h
+#
 
 endif # INTERNAL_CLOBBER_ONLY
 

@@ -284,6 +284,34 @@ PhysmemImportSecBuf_exit:
 	return 0;
 }
 
+static IMG_INT
+PVRSRVBridgePowMonTestIoctl(IMG_UINT32 ui32BridgeID,
+					 PVRSRV_BRIDGE_IN_POWMONTESTIOCTL *psPowMonTestIoctlIN,
+					 PVRSRV_BRIDGE_OUT_POWMONTESTIOCTL *psPowMonTestIoctlOUT,
+					 CONNECTION_DATA *psConnection)
+{
+
+	PVRSRV_BRIDGE_ASSERT_CMD(ui32BridgeID, PVRSRV_BRIDGE_DEBUGMISC_POWMONTESTIOCTL);
+
+	PVR_UNREFERENCED_PARAMETER(psConnection);
+
+
+
+
+	psPowMonTestIoctlOUT->eError =
+		PowMonTestIoctlKM(
+					psPowMonTestIoctlIN->ui32Cmd,
+					psPowMonTestIoctlIN->ui32In1,
+					psPowMonTestIoctlIN->ui32In2,
+					&psPowMonTestIoctlOUT->ui32Out1,
+					&psPowMonTestIoctlOUT->ui32Out2);
+
+
+
+
+	return 0;
+}
+
 
 
 /* *************************************************************************** 
@@ -302,6 +330,7 @@ PVRSRV_ERROR RegisterDEBUGMISCFunctions(IMG_VOID)
 	SetDispatchTableEntry(PVRSRV_BRIDGE_DEBUGMISC_RGXDEBUGMISCSETFWLOG, PVRSRVBridgeRGXDebugMiscSetFWLog);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_DEBUGMISC_RGXDEBUGMISCDUMPFREELISTPAGELIST, PVRSRVBridgeRGXDebugMiscDumpFreelistPageList);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_DEBUGMISC_PHYSMEMIMPORTSECBUF, PVRSRVBridgePhysmemImportSecBuf);
+	SetDispatchTableEntry(PVRSRV_BRIDGE_DEBUGMISC_POWMONTESTIOCTL, PVRSRVBridgePowMonTestIoctl);
 
 	return PVRSRV_OK;
 }

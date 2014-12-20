@@ -52,14 +52,16 @@ ifeq ($(SUPPORT_ION),1)
 ifeq ($(LMA),1)
 # For LMA, use the TC-specific ion heap.
 pvrsrvkm-y += \
-	services/system/$(PVR_SYSTEM)/ion_support.o \
+	services/system/$(PVR_SYSTEM)/ion_support_tc.o \
 	services/system/common/env/linux/ion_lma_heap.o
 else
 # For UMA, use the generic ion support code, which creates heaps from system
 # memory.
 pvrsrvkm-y += \
-	services/system/common/env/linux/ion_support.o
+	services/system/common/env/linux/ion_support_generic.o
 endif # LMA
 endif # SUPPORT_ION
 
-ccflags-y += -I$(TOP)/services/system/common/env/linux
+ccflags-y += \
+	-I$(TOP)/services/system/common/env/linux \
+	-I$(TOP)/include/system/$(PVR_SYSTEM)

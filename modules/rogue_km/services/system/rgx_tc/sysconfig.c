@@ -53,6 +53,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "power.h"
 #include "sysinfo.h"
 #include "apollo.h"
+#include "apollo_regs.h"
 #include "sysconfig.h"
 #include "physheap.h"
 #include "apollo_flasher.h"
@@ -453,7 +454,7 @@ static PVRSRV_ERROR ApolloHardReset(SYS_DATA *psSysData)
 	{
 		IMG_UINT32 ui32DUTResets;
 		IMG_UINT32 ui32DUTGPIO1;
-		IMG_UINT32 ui32PLLStatus;
+		IMG_UINT32 ui32PLLStatus = 0;
 
 		/* Un-bypass the PLL on the DUT */
 		SPI_Write(psSysData->pvSystemRegCpuVBase, 0x1, 0x0);
@@ -486,9 +487,9 @@ static PVRSRV_ERROR ApolloHardReset(SYS_DATA *psSysData)
 
 	while (!bAlignmentOK && resetAttempts < 10)
 	{
-		IMG_UINT32 ui32Eyes;
-		IMG_UINT32 ui32ClkTaps;
-		IMG_UINT32 ui32TrainAck;
+		IMG_UINT32 ui32Eyes     = 0;
+		IMG_UINT32 ui32ClkTaps  = 0;
+		IMG_UINT32 ui32TrainAck = 0;
 
 		IMG_INT bank;
 
@@ -774,7 +775,7 @@ ErrorPCIReleaseDevice:
 	return eError;
 }
 
-PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig)
+PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig, DUMPDEBUG_PRINTF_FUNC *pfnDumpDebugPrintf)
 {
 	PVRSRV_ERROR	eError;
 	SYS_DATA		*psSysData = psSysConfig->pasDevices[0].hSysData;
@@ -782,7 +783,7 @@ PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig)
 
 	PVR_UNREFERENCED_PARAMETER(psSysConfig);
 
-	PVR_LOG(("------[ rgx_tc system debug ]------"));
+	PVR_DUMPDEBUG_LOG(("------[ rgx_tc system debug ]------"));
 
 	/* Read the temperature */
 	eError = SPI_Read(psSysData->pvSystemRegCpuVBase, TCF_TEMP_SENSOR_SPI_OFFSET, &ui32RegVal);
@@ -792,10 +793,10 @@ PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig)
 		goto SysDebugInfo_exit;
 	}
 
-	PVR_LOG(("Chip temperature: %d degrees C", TCF_TEMP_SENSOR_TO_C(ui32RegVal)));
+	PVR_DUMPDEBUG_LOG(("Chip temperature: %d degrees C", TCF_TEMP_SENSOR_TO_C(ui32RegVal)));
 
 	eError = SPI_Read(psSysData->pvSystemRegCpuVBase, 0x2, &ui32RegVal);
-	PVR_LOG(("PLL status: %x", ui32RegVal));
+	PVR_DUMPDEBUG_LOG(("PLL status: %x", ui32RegVal));
 
 SysDebugInfo_exit:
 	return eError;
@@ -1347,14 +1348,14 @@ ErrorPCIReleaseDevice:
 	return eError;
 }
 
-PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig)
+PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig, DUMPDEBUG_PRINTF_FUNC *pfnDumpDebugPrintf)
 {
 	PVRSRV_ERROR	eError;
 	SYS_DATA		*psSysData = psSysConfig->pasDevices[0].hSysData;
 	IMG_UINT32		ui32RegOffset;
 	IMG_UINT32		ui32RegVal;
 
-	PVR_LOG(("------[ rgx_tc system debug ]------"));
+	PVR_DUMPDEBUG_LOG(("------[ rgx_tc system debug ]------"));
 
 	/* Read the temperature */
 	ui32RegOffset = 0x5;
@@ -1365,7 +1366,7 @@ PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig)
 		goto SysDebugInfo_exit;
 	}
 
-	PVR_LOG(("Chip temperature: %d degrees C", (ui32RegVal * 233 / 4096) - 66));
+	PVR_DUMPDEBUG_LOG(("Chip temperature: %d degrees C", (ui32RegVal * 233 / 4096) - 66));
 
 SysDebugInfo_exit:
 	return eError;

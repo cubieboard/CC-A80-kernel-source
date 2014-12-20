@@ -121,7 +121,9 @@ PVRSRVBridgeConnect(IMG_UINT32 ui32BridgeID,
 					psConnectIN->ui32Flags,
 					psConnectIN->ui32ClientBuildOptions,
 					psConnectIN->ui32ClientDDKVersion,
-					psConnectIN->ui32ClientDDKBuild);
+					psConnectIN->ui32ClientDDKBuild,
+					&psConnectOUT->ui8KernelArch,
+					&psConnectOUT->ui32Log2PageSize);
 
 
 
@@ -160,20 +162,46 @@ PVRSRVBridgeEnumerateDevices(IMG_UINT32 ui32BridgeID,
 					 PVRSRV_BRIDGE_OUT_ENUMERATEDEVICES *psEnumerateDevicesOUT,
 					 CONNECTION_DATA *psConnection)
 {
-	PVRSRV_DEVICE_IDENTIFIER *psDeviceIdentifierInt = IMG_NULL;
+	PVRSRV_DEVICE_TYPE *peDeviceTypeInt = IMG_NULL;
+	PVRSRV_DEVICE_CLASS *peDeviceClassInt = IMG_NULL;
+	IMG_UINT32 *pui32DeviceIndexInt = IMG_NULL;
 
 	PVRSRV_BRIDGE_ASSERT_CMD(ui32BridgeID, PVRSRV_BRIDGE_SRVCORE_ENUMERATEDEVICES);
 
 	PVR_UNREFERENCED_PARAMETER(psConnection);
 	PVR_UNREFERENCED_PARAMETER(psEnumerateDevicesIN);
 
-	psEnumerateDevicesOUT->psDeviceIdentifier = psEnumerateDevicesIN->psDeviceIdentifier;
+	psEnumerateDevicesOUT->peDeviceType = psEnumerateDevicesIN->peDeviceType;
+	psEnumerateDevicesOUT->peDeviceClass = psEnumerateDevicesIN->peDeviceClass;
+	psEnumerateDevicesOUT->pui32DeviceIndex = psEnumerateDevicesIN->pui32DeviceIndex;
 
 
 	
 	{
-		psDeviceIdentifierInt = OSAllocMem(PVRSRV_MAX_DEVICES * sizeof(PVRSRV_DEVICE_IDENTIFIER));
-		if (!psDeviceIdentifierInt)
+		peDeviceTypeInt = OSAllocMem(PVRSRV_MAX_DEVICES * sizeof(PVRSRV_DEVICE_TYPE));
+		if (!peDeviceTypeInt)
+		{
+			psEnumerateDevicesOUT->eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+	
+			goto EnumerateDevices_exit;
+		}
+	}
+
+	
+	{
+		peDeviceClassInt = OSAllocMem(PVRSRV_MAX_DEVICES * sizeof(PVRSRV_DEVICE_CLASS));
+		if (!peDeviceClassInt)
+		{
+			psEnumerateDevicesOUT->eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+	
+			goto EnumerateDevices_exit;
+		}
+	}
+
+	
+	{
+		pui32DeviceIndexInt = OSAllocMem(PVRSRV_MAX_DEVICES * sizeof(IMG_UINT32));
+		if (!pui32DeviceIndexInt)
 		{
 			psEnumerateDevicesOUT->eError = PVRSRV_ERROR_OUT_OF_MEMORY;
 	
@@ -185,12 +213,32 @@ PVRSRVBridgeEnumerateDevices(IMG_UINT32 ui32BridgeID,
 	psEnumerateDevicesOUT->eError =
 		PVRSRVEnumerateDevicesKM(
 					&psEnumerateDevicesOUT->ui32NumDevices,
-					psDeviceIdentifierInt);
+					peDeviceTypeInt,
+					peDeviceClassInt,
+					pui32DeviceIndexInt);
 
 
-	if ( !OSAccessOK(PVR_VERIFY_WRITE, (IMG_VOID*) psEnumerateDevicesOUT->psDeviceIdentifier, (PVRSRV_MAX_DEVICES * sizeof(PVRSRV_DEVICE_IDENTIFIER))) 
-		|| (OSCopyToUser(NULL, psEnumerateDevicesOUT->psDeviceIdentifier, psDeviceIdentifierInt,
-		(PVRSRV_MAX_DEVICES * sizeof(PVRSRV_DEVICE_IDENTIFIER))) != PVRSRV_OK) )
+	if ( !OSAccessOK(PVR_VERIFY_WRITE, (IMG_VOID*) psEnumerateDevicesOUT->peDeviceType, (PVRSRV_MAX_DEVICES * sizeof(PVRSRV_DEVICE_TYPE))) 
+		|| (OSCopyToUser(NULL, psEnumerateDevicesOUT->peDeviceType, peDeviceTypeInt,
+		(PVRSRV_MAX_DEVICES * sizeof(PVRSRV_DEVICE_TYPE))) != PVRSRV_OK) )
+	{
+		psEnumerateDevicesOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
+
+		goto EnumerateDevices_exit;
+	}
+
+	if ( !OSAccessOK(PVR_VERIFY_WRITE, (IMG_VOID*) psEnumerateDevicesOUT->peDeviceClass, (PVRSRV_MAX_DEVICES * sizeof(PVRSRV_DEVICE_CLASS))) 
+		|| (OSCopyToUser(NULL, psEnumerateDevicesOUT->peDeviceClass, peDeviceClassInt,
+		(PVRSRV_MAX_DEVICES * sizeof(PVRSRV_DEVICE_CLASS))) != PVRSRV_OK) )
+	{
+		psEnumerateDevicesOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
+
+		goto EnumerateDevices_exit;
+	}
+
+	if ( !OSAccessOK(PVR_VERIFY_WRITE, (IMG_VOID*) psEnumerateDevicesOUT->pui32DeviceIndex, (PVRSRV_MAX_DEVICES * sizeof(IMG_UINT32))) 
+		|| (OSCopyToUser(NULL, psEnumerateDevicesOUT->pui32DeviceIndex, pui32DeviceIndexInt,
+		(PVRSRV_MAX_DEVICES * sizeof(IMG_UINT32))) != PVRSRV_OK) )
 	{
 		psEnumerateDevicesOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
 
@@ -199,8 +247,12 @@ PVRSRVBridgeEnumerateDevices(IMG_UINT32 ui32BridgeID,
 
 
 EnumerateDevices_exit:
-	if (psDeviceIdentifierInt)
-		OSFreeMem(psDeviceIdentifierInt);
+	if (peDeviceTypeInt)
+		OSFreeMem(peDeviceTypeInt);
+	if (peDeviceClassInt)
+		OSFreeMem(peDeviceClassInt);
+	if (pui32DeviceIndexInt)
+		OSFreeMem(pui32DeviceIndexInt);
 
 	return 0;
 }
@@ -798,6 +850,46 @@ ResetHWRLogs_exit:
 	return 0;
 }
 
+static IMG_INT
+PVRSRVBridgeSoftReset(IMG_UINT32 ui32BridgeID,
+					 PVRSRV_BRIDGE_IN_SOFTRESET *psSoftResetIN,
+					 PVRSRV_BRIDGE_OUT_SOFTRESET *psSoftResetOUT,
+					 CONNECTION_DATA *psConnection)
+{
+	IMG_HANDLE hDevNodeInt = IMG_NULL;
+
+	PVRSRV_BRIDGE_ASSERT_CMD(ui32BridgeID, PVRSRV_BRIDGE_SRVCORE_SOFTRESET);
+
+
+
+
+
+				{
+					/* Look up the address from the handle */
+					psSoftResetOUT->eError =
+						PVRSRVLookupHandle(psConnection->psHandleBase,
+											(IMG_HANDLE *) &hDevNodeInt,
+											psSoftResetIN->hDevNode,
+											PVRSRV_HANDLE_TYPE_DEV_NODE);
+					if(psSoftResetOUT->eError != PVRSRV_OK)
+					{
+						goto SoftReset_exit;
+					}
+
+				}
+
+	psSoftResetOUT->eError =
+		PVRSRVSoftResetKM(
+					hDevNodeInt,
+					psSoftResetIN->ui64ResetValue);
+
+
+
+SoftReset_exit:
+
+	return 0;
+}
+
 
 
 /* *************************************************************************** 
@@ -829,6 +921,7 @@ PVRSRV_ERROR RegisterSRVCOREFunctions(IMG_VOID)
 	SetDispatchTableEntry(PVRSRV_BRIDGE_SRVCORE_HWOPTIMEOUT, PVRSRVBridgeHWOpTimeout);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_SRVCORE_KICKDEVICES, PVRSRVBridgeKickDevices);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_SRVCORE_RESETHWRLOGS, PVRSRVBridgeResetHWRLogs);
+	SetDispatchTableEntry(PVRSRV_BRIDGE_SRVCORE_SOFTRESET, PVRSRVBridgeSoftReset);
 
 	return PVRSRV_OK;
 }

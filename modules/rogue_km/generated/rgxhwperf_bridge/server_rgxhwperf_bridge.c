@@ -106,7 +106,7 @@ PVRSRVBridgeRGXCtrlHWPerf(IMG_UINT32 ui32BridgeID,
 	psRGXCtrlHWPerfOUT->eError =
 		PVRSRVRGXCtrlHWPerfKM(
 					hDevNodeInt,
-					psRGXCtrlHWPerfIN->bEnable,
+					psRGXCtrlHWPerfIN->bToggle,
 					psRGXCtrlHWPerfIN->ui64Mask);
 
 
@@ -245,6 +245,71 @@ RGXCtrlHWPerfCounters_exit:
 	return 0;
 }
 
+static IMG_INT
+PVRSRVBridgeRGXConfigCustomCounters(IMG_UINT32 ui32BridgeID,
+					 PVRSRV_BRIDGE_IN_RGXCONFIGCUSTOMCOUNTERS *psRGXConfigCustomCountersIN,
+					 PVRSRV_BRIDGE_OUT_RGXCONFIGCUSTOMCOUNTERS *psRGXConfigCustomCountersOUT,
+					 CONNECTION_DATA *psConnection)
+{
+	IMG_HANDLE hDevNodeInt = IMG_NULL;
+	IMG_UINT32 *ui32CustomCounterIDsInt = IMG_NULL;
+
+	PVRSRV_BRIDGE_ASSERT_CMD(ui32BridgeID, PVRSRV_BRIDGE_RGXHWPERF_RGXCONFIGCUSTOMCOUNTERS);
+
+
+
+
+	if (psRGXConfigCustomCountersIN->ui16NumCustomCounters != 0)
+	{
+		ui32CustomCounterIDsInt = OSAllocMem(psRGXConfigCustomCountersIN->ui16NumCustomCounters * sizeof(IMG_UINT32));
+		if (!ui32CustomCounterIDsInt)
+		{
+			psRGXConfigCustomCountersOUT->eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+	
+			goto RGXConfigCustomCounters_exit;
+		}
+	}
+
+			/* Copy the data over */
+			if ( !OSAccessOK(PVR_VERIFY_READ, (IMG_VOID*) psRGXConfigCustomCountersIN->pui32CustomCounterIDs, psRGXConfigCustomCountersIN->ui16NumCustomCounters * sizeof(IMG_UINT32))
+				|| (OSCopyFromUser(NULL, ui32CustomCounterIDsInt, psRGXConfigCustomCountersIN->pui32CustomCounterIDs,
+				psRGXConfigCustomCountersIN->ui16NumCustomCounters * sizeof(IMG_UINT32)) != PVRSRV_OK) )
+			{
+				psRGXConfigCustomCountersOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
+
+				goto RGXConfigCustomCounters_exit;
+			}
+
+				{
+					/* Look up the address from the handle */
+					psRGXConfigCustomCountersOUT->eError =
+						PVRSRVLookupHandle(psConnection->psHandleBase,
+											(IMG_HANDLE *) &hDevNodeInt,
+											psRGXConfigCustomCountersIN->hDevNode,
+											PVRSRV_HANDLE_TYPE_DEV_NODE);
+					if(psRGXConfigCustomCountersOUT->eError != PVRSRV_OK)
+					{
+						goto RGXConfigCustomCounters_exit;
+					}
+
+				}
+
+	psRGXConfigCustomCountersOUT->eError =
+		PVRSRVRGXConfigCustomCountersKM(
+					hDevNodeInt,
+					psRGXConfigCustomCountersIN->ui16CustomBlockID,
+					psRGXConfigCustomCountersIN->ui16NumCustomCounters,
+					ui32CustomCounterIDsInt);
+
+
+
+RGXConfigCustomCounters_exit:
+	if (ui32CustomCounterIDsInt)
+		OSFreeMem(ui32CustomCounterIDsInt);
+
+	return 0;
+}
+
 
 
 /* *************************************************************************** 
@@ -262,6 +327,7 @@ PVRSRV_ERROR RegisterRGXHWPERFFunctions(IMG_VOID)
 	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCTRLHWPERF, PVRSRVBridgeRGXCtrlHWPerf);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCONFIGENABLEHWPERFCOUNTERS, PVRSRVBridgeRGXConfigEnableHWPerfCounters);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCTRLHWPERFCOUNTERS, PVRSRVBridgeRGXCtrlHWPerfCounters);
+	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCONFIGCUSTOMCOUNTERS, PVRSRVBridgeRGXConfigCustomCounters);
 
 	return PVRSRV_OK;
 }

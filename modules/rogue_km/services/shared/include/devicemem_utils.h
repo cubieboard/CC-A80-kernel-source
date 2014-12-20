@@ -166,6 +166,9 @@ typedef struct _DEVMEM_CPU_IMPORT_ {
 	IMG_UINT32 ui32RefCount;		/*!< Refcount of the CPU virtual address */
 	IMG_HANDLE hOSMMapData;			/*!< CPU mapping handle */
 	POS_LOCK hLock;					/*!< Lock to protect the CPU import */
+#if !defined(__KERNEL__) && defined(SUPPORT_ION)
+	int iDmaBufFd;					/*!< >=0 if this was an imported ion allocation */
+#endif
 } DEVMEM_CPU_IMPORT;
 
 typedef struct _DEVMEM_IMPORT_ {

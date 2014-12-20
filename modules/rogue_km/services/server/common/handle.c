@@ -45,10 +45,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /* See handle.h for a description of the handle API. */
 
 /*
- * There is no locking here.  It is assumed the code is used in a single
- * threaded environment.  In particular, it is assumed that the code will
- * never be called from an interrupt handler.
- *
  * The implmentation supports movable handle structures, allowing the address
  * of a handle structure to change without having to fix up pointers in
  * any of the handle structures.  For example, the linked list mechanism
@@ -1052,7 +1048,8 @@ PVRSRV_ERROR PVRSRVAllocHandle(PVRSRV_HANDLE_BASE *psBase,
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVAllocHandle: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto exit_AllocHandle;
 	}
 
 	if (!TEST_FLAG(eFlag, PVRSRV_HANDLE_ALLOC_FLAG_MULTI))
@@ -1069,7 +1066,7 @@ PVRSRV_ERROR PVRSRVAllocHandle(PVRSRV_HANDLE_BASE *psBase,
 				PVR_DPF((PVR_DBG_ERROR,
 					 "PVRSRVAllocHandle: Lookup of existing handle failed (%s)",
 					 PVRSRVGetErrorStringKM(eError)));
-				return eError;
+				goto exit_AllocHandle;
 			}
 
 			/*
@@ -1081,13 +1078,19 @@ PVRSRV_ERROR PVRSRVAllocHandle(PVRSRV_HANDLE_BASE *psBase,
 			{
 				psHandleData->ui32Refs++;
 				*phHandle = hHandle;
-				return PVRSRV_OK;
+				eError = PVRSRV_OK;
+				goto exit_AllocHandle;
 			}
-			return PVRSRV_ERROR_HANDLE_NOT_SHAREABLE;
+			eError = PVRSRV_ERROR_HANDLE_NOT_SHAREABLE;
+			goto exit_AllocHandle;
 		}
 	}
 
-	return AllocHandle(psBase, phHandle, pvData, eType, eFlag, IMG_NULL);
+	eError = AllocHandle(psBase, phHandle, pvData, eType, eFlag, IMG_NULL);
+
+	exit_AllocHandle:
+
+	return eError;
 }
 
 /*!
@@ -1129,7 +1132,8 @@ PVRSRV_ERROR PVRSRVAllocSubHandle(PVRSRV_HANDLE_BASE *psBase,
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVAllocSubHandle: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto err;
 	}
 
 	hParentKey = TEST_FLAG(eFlag, PVRSRV_HANDLE_ALLOC_FLAG_PRIVATE) ? hParent : IMG_NULL;
@@ -1139,7 +1143,7 @@ PVRSRV_ERROR PVRSRVAllocSubHandle(PVRSRV_HANDLE_BASE *psBase,
 	if (eError != PVRSRV_OK)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVAllocSubHandle: Failed to get parent handle structure"));
-		return eError;
+		goto err;
 	}
 
 	if (!TEST_FLAG(eFlag, PVRSRV_HANDLE_ALLOC_FLAG_MULTI))
@@ -1152,7 +1156,7 @@ PVRSRV_ERROR PVRSRVAllocSubHandle(PVRSRV_HANDLE_BASE *psBase,
 			if (eError != PVRSRV_OK)
 			{
 				PVR_DPF((PVR_DBG_ERROR, "PVRSRVAllocSubHandle: Lookup of existing handle failed"));
-				return eError;
+				goto err;
 			}
 
 			PVR_ASSERT(hParentKey != IMG_NULL && ParentHandle(psCHandleData) == hParent);
@@ -1168,16 +1172,18 @@ PVRSRV_ERROR PVRSRVAllocSubHandle(PVRSRV_HANDLE_BASE *psBase,
 			{
 				psCHandleData->ui32Refs++;
 				*phHandle = hHandle;
-				return PVRSRV_OK;
+				eError = PVRSRV_OK;
+				goto err;
 			}
-			return PVRSRV_ERROR_HANDLE_NOT_SHAREABLE;
+			eError = PVRSRV_ERROR_HANDLE_NOT_SHAREABLE;
+			goto err;
 		}
 	}
 
 	eError = AllocHandle(psBase, &hHandle, pvData, eType, eFlag, hParentKey);
 	if (eError != PVRSRV_OK)
 	{
-		return eError;
+		goto err;
 	}
 
 	eError = GetHandleData(psBase, &psCHandleData, hHandle, PVRSRV_HANDLE_TYPE_NONE);
@@ -1189,7 +1195,7 @@ PVRSRV_ERROR PVRSRVAllocSubHandle(PVRSRV_HANDLE_BASE *psBase,
 		   can't also get it's handle structure. Otherwise something has gone badly wrong. */
 		PVR_ASSERT(eError == PVRSRV_OK);
 
-		return eError;
+		goto err;
 	}
 
 	/*
@@ -1203,7 +1209,7 @@ PVRSRV_ERROR PVRSRVAllocSubHandle(PVRSRV_HANDLE_BASE *psBase,
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVAllocSubHandle: Failed to get parent handle structure"));
 
 		FreeHandle(psBase, hHandle, eType, IMG_NULL);
-		return eError;
+		goto err;
 	}
 
 	eError = AdoptChild(psBase, psPHandleData, psCHandleData);
@@ -1212,12 +1218,15 @@ PVRSRV_ERROR PVRSRVAllocSubHandle(PVRSRV_HANDLE_BASE *psBase,
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVAllocSubHandle: Parent handle failed to adopt subhandle"));
 
 		FreeHandle(psBase, hHandle, eType, IMG_NULL);
-		return eError;
+		goto err;
 	}
 
 	*phHandle = hHandle;
 
-	return PVRSRV_OK;
+	eError = PVRSRV_OK;
+
+	err:
+	return eError;
 }
 
 /*!
@@ -1242,6 +1251,7 @@ PVRSRV_ERROR PVRSRVFindHandle(PVRSRV_HANDLE_BASE *psBase,
 			      PVRSRV_HANDLE_TYPE eType)
 {
 	IMG_HANDLE hHandle;
+	PVRSRV_ERROR eError;
 
 	/* PVRSRV_HANDLE_TYPE_NONE is reserved for internal use */
 	PVR_ASSERT(eType != PVRSRV_HANDLE_TYPE_NONE);
@@ -1250,19 +1260,25 @@ PVRSRV_ERROR PVRSRVFindHandle(PVRSRV_HANDLE_BASE *psBase,
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVFindHandle: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto err;
 	}
 
 	/* See if there is a handle for this data pointer */
 	hHandle = FindHandle(psBase, pvData, eType, IMG_NULL);
 	if (hHandle == IMG_NULL)
 	{
-		return PVRSRV_ERROR_HANDLE_NOT_FOUND;
+		eError = PVRSRV_ERROR_HANDLE_NOT_FOUND;
+		goto err;
 	}
 
 	*phHandle = hHandle;
 
-	return PVRSRV_OK;
+	eError = PVRSRV_OK;
+
+	err:
+	return eError;
+
 }
 
 /*!
@@ -1295,7 +1311,8 @@ PVRSRV_ERROR PVRSRVLookupHandleAnyType(PVRSRV_HANDLE_BASE *psBase,
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVLookupHandleAnyType: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto err;
 	}
 
 	eError = GetHandleData(psBase, &psHandleData, hHandle, PVRSRV_HANDLE_TYPE_NONE);
@@ -1305,13 +1322,16 @@ PVRSRV_ERROR PVRSRVLookupHandleAnyType(PVRSRV_HANDLE_BASE *psBase,
 			 "PVRSRVLookupHandleAnyType: Error looking up handle (%s)",
 			 PVRSRVGetErrorStringKM(eError)));
 		OSDumpStack();
-		return eError;
+		goto err;
 	}
 
 	*ppvData = psHandleData->pvData;
 	*peType = psHandleData->eType;
 
-	return PVRSRV_OK;
+	eError = PVRSRV_OK;
+
+	err:
+	return eError;
 }
 
 /*!
@@ -1345,7 +1365,8 @@ PVRSRV_ERROR PVRSRVLookupHandle(PVRSRV_HANDLE_BASE *psBase,
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVLookupHandle: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto err;
 	}
 
 	eError = GetHandleData(psBase, &psHandleData, hHandle, eType);
@@ -1355,12 +1376,15 @@ PVRSRV_ERROR PVRSRVLookupHandle(PVRSRV_HANDLE_BASE *psBase,
 			 "PVRSRVLookupHandle: Error looking up handle (%s)",
 			 PVRSRVGetErrorStringKM(eError)));
 		OSDumpStack();
-		return eError;
+		goto err;
 	}
 
 	*ppvData = psHandleData->pvData;
 
-	return PVRSRV_OK;
+	eError = PVRSRV_OK;
+
+	err:
+	return eError;
 }
 
 /*!
@@ -1397,7 +1421,8 @@ PVRSRV_ERROR PVRSRVLookupSubHandle(PVRSRV_HANDLE_BASE *psBase,
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVLookupSubHandle: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto err;
 	}
 
 	eError = GetHandleData(psBase, &psCHandleData, hHandle, eType);
@@ -1407,7 +1432,7 @@ PVRSRV_ERROR PVRSRVLookupSubHandle(PVRSRV_HANDLE_BASE *psBase,
 			 "PVRSRVLookupSubHandle: Error looking up subhandle (%s)",
 			 PVRSRVGetErrorStringKM(eError)));
 		OSDumpStack();
-		return eError;
+		goto err;
 	}
 
 	/* Look for hAncestor among the handle's ancestors */
@@ -1417,13 +1442,17 @@ PVRSRV_ERROR PVRSRVLookupSubHandle(PVRSRV_HANDLE_BASE *psBase,
 		if (eError != PVRSRV_OK)
 		{
 			PVR_DPF((PVR_DBG_ERROR,"PVRSRVLookupSubHandle: Subhandle doesn't belong to given ancestor"));
-			return PVRSRV_ERROR_INVALID_SUBHANDLE;
+			eError = PVRSRV_ERROR_INVALID_SUBHANDLE;
+			goto err;
 		}
 	}
 
 	*ppvData = psCHandleData->pvData;
 
-	return PVRSRV_OK;
+	eError = PVRSRV_OK;
+
+	err:
+	return eError;
 }
 
 /*!
@@ -1459,7 +1488,8 @@ PVRSRV_ERROR PVRSRVGetParentHandle(PVRSRV_HANDLE_BASE *psBase,
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVGetParentHandle: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto err;
 	}
 
 	eError = GetHandleData(psBase, &psHandleData, hHandle, eType);
@@ -1469,12 +1499,15 @@ PVRSRV_ERROR PVRSRVGetParentHandle(PVRSRV_HANDLE_BASE *psBase,
 			 "PVRSRVGetParentHandle: Error looking up subhandle (%s)",
 			 PVRSRVGetErrorStringKM(eError)));
 		OSDumpStack();
-		return eError;
+		goto err;
 	}
 
 	*phParent = ParentHandle(psHandleData);
 
-	return PVRSRV_OK;
+	eError = PVRSRV_OK;
+
+	err:
+	return eError;
 }
 
 /*!
@@ -1499,6 +1532,8 @@ PVRSRV_ERROR PVRSRVLookupAndReleaseHandle(PVRSRV_HANDLE_BASE *psBase,
 					  IMG_HANDLE hHandle,
 					  PVRSRV_HANDLE_TYPE eType)
 {
+	PVRSRV_ERROR eError;
+
 	/* PVRSRV_HANDLE_TYPE_NONE is reserved for internal use */
 	PVR_ASSERT(eType != PVRSRV_HANDLE_TYPE_NONE);
 	PVR_ASSERT(gpsHandleFuncs);
@@ -1506,10 +1541,14 @@ PVRSRV_ERROR PVRSRVLookupAndReleaseHandle(PVRSRV_HANDLE_BASE *psBase,
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVLookupAndReleaseHandle: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto exit_LookupAndReleaseHandle;
 	}
 
-	return FreeHandle(psBase, hHandle, eType, ppvData);
+	eError = FreeHandle(psBase, hHandle, eType, ppvData);
+
+	exit_LookupAndReleaseHandle:
+	return eError;
 }
 
 /*!
@@ -1529,6 +1568,9 @@ PVRSRV_ERROR PVRSRVReleaseHandle(PVRSRV_HANDLE_BASE *psBase,
 				 IMG_HANDLE hHandle,
 				 PVRSRV_HANDLE_TYPE eType)
 {
+
+	PVRSRV_ERROR eError;
+
 	/* PVRSRV_HANDLE_TYPE_NONE is reserved for internal use */
 	PVR_ASSERT(eType != PVRSRV_HANDLE_TYPE_NONE);
 	PVR_ASSERT(gpsHandleFuncs);
@@ -1536,86 +1578,14 @@ PVRSRV_ERROR PVRSRVReleaseHandle(PVRSRV_HANDLE_BASE *psBase,
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVReleaseHandle: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto exit_ReleaseHandle;
 	}
 
-	return FreeHandle(psBase, hHandle, eType, IMG_NULL);
-}
+	eError = FreeHandle(psBase, hHandle, eType, IMG_NULL);
 
-/*!
-******************************************************************************
-
- @Function	PVRSRVSetMaxHandle
-
- @Description	Set maximum handle number for given handle base
-
- @Input 	psBase - pointer to handle base structure
-		ui32MaxHandle - Maximum handle number
-
- @Return	Error code or PVRSRV_OK
-
-******************************************************************************/
-PVRSRV_ERROR PVRSRVSetMaxHandle(PVRSRV_HANDLE_BASE *psBase, IMG_UINT32 ui32MaxHandle)
-{
-	PVR_ASSERT(gpsHandleFuncs);
-
-	if (psBase == IMG_NULL)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "PVRSRVSetMaxHandle: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
-	}
-
-	return gpsHandleFuncs->pfnSetMaxHandle(psBase->psImplBase, ui32MaxHandle);
-}
-
-/*!
-******************************************************************************
-
- @Function	PVRSRVGetMaxHandle
-
- @Description	Get maximum handle number for given handle base
-
- @Input 	psBase - pointer to handle base structure
-
- @Return	Maximum handle number or 0 if handle limits not supported.
-
-******************************************************************************/
-IMG_UINT32 PVRSRVGetMaxHandle(PVRSRV_HANDLE_BASE *psBase)
-{
-	PVR_ASSERT(gpsHandleFuncs);
-
-	if (psBase == IMG_NULL)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "PVRSRVGetMaxHandle: Missing handle base"));
-		return 0;
-	}
-
-	return gpsHandleFuncs->pfnGetMaxHandle(psBase->psImplBase);
-}
-
-/*!
-******************************************************************************
-
- @Function	PVRSRVEnableHandlePurging
-
- @Description	Enable purging for a given handle base
-
- @Input 	psBase - pointer to handle base structure
-
- @Return	Error code or PVRSRV_OK
-
-******************************************************************************/
-PVRSRV_ERROR PVRSRVEnableHandlePurging(PVRSRV_HANDLE_BASE *psBase)
-{
-	PVR_ASSERT(gpsHandleFuncs);
-
-	if (psBase == IMG_NULL)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "PVRSRVEnableHandlePurging: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
-	}
-
-	return gpsHandleFuncs->pfnEnableHandlePurging(psBase->psImplBase);
+exit_ReleaseHandle:
+	return eError;
 }
 
 /*!
@@ -1632,15 +1602,21 @@ PVRSRV_ERROR PVRSRVEnableHandlePurging(PVRSRV_HANDLE_BASE *psBase)
 ******************************************************************************/
 PVRSRV_ERROR PVRSRVPurgeHandles(PVRSRV_HANDLE_BASE *psBase)
 {
+	PVRSRV_ERROR eError;
+
 	PVR_ASSERT(gpsHandleFuncs);
 
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVPurgeHandles: Missing handle base"));
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto exit_PVRSRVPurgeHandles;
 	}
 
-	return gpsHandleFuncs->pfnPurgeHandles(psBase->psImplBase);
+	eError = gpsHandleFuncs->pfnPurgeHandles(psBase->psImplBase);
+
+	exit_PVRSRVPurgeHandles:
+	return eError;
 }
 
 /*!
@@ -1670,21 +1646,22 @@ PVRSRV_ERROR PVRSRVAllocHandleBase(PVRSRV_HANDLE_BASE **ppsBase)
 
 	if (ppsBase == IMG_NULL)
 	{
-		return PVRSRV_ERROR_INVALID_PARAMS;
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
+		goto err;
 	}
 
 	psBase = OSAllocZMem(sizeof(*psBase));
 	if (psBase == IMG_NULL)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVAllocHandleBase: Couldn't allocate handle base"));
-		return PVRSRV_ERROR_OUT_OF_MEMORY;
+		eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+		goto err;
 	}
 
 	eError = gpsHandleFuncs->pfnCreateHandleBase(&psBase->psImplBase);
 	if (eError != PVRSRV_OK)
 	{
 		goto ErrorFreeHandleBase;
-		return eError;
 	}
 
 	psBase->psHashTab = HASH_Create_Extended(HANDLE_HASH_TAB_INIT_SIZE, 
@@ -1708,6 +1685,7 @@ ErrorDestroyHandleBase:
 ErrorFreeHandleBase:
 	OSFreeMem(psBase);
 
+err:
 	return eError;
 }
 
@@ -1776,7 +1754,7 @@ PVRSRV_ERROR PVRSRVFreeHandleBase(PVRSRV_HANDLE_BASE *psBase)
 						       (IMG_VOID *)psBase);
 	if (eError != PVRSRV_OK)
 	{
-		return eError;
+		goto err;
 	}
 
 	if (psBase->psHashTab != IMG_NULL)
@@ -1787,12 +1765,14 @@ PVRSRV_ERROR PVRSRVFreeHandleBase(PVRSRV_HANDLE_BASE *psBase)
 	eError = gpsHandleFuncs->pfnDestroyHandleBase(psBase->psImplBase);
 	if (eError != PVRSRV_OK)
 	{
-		return eError;
+		goto err;
 	}
 
 	OSFreeMem(psBase);
 
-	return PVRSRV_OK;
+	eError = PVRSRV_OK;
+err:
+	return eError;
 }
 
 /*!
@@ -1830,7 +1810,7 @@ PVRSRV_ERROR PVRSRVHandleInit(IMG_VOID)
 		goto error;
 	}
 
-	eError = PVRSRVEnableHandlePurging(gpsKernelHandleBase);
+	eError = gpsHandleFuncs->pfnEnableHandlePurging(gpsKernelHandleBase->psImplBase);
 	if (eError != PVRSRV_OK)
 	{
 		PVR_DPF((PVR_DBG_ERROR,

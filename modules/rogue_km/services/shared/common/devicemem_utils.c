@@ -49,6 +49,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "devicemem_utils.h"
 #include "client_mm_bridge.h"
 
+#if !defined(__KERNEL__) && defined(SUPPORT_ION)
+#include <sys/mman.h>
+#endif
+
 /*
 	The Devmem import structure is the structure we use
 	to manage memory that is "imported" (which is page
@@ -276,7 +280,7 @@ PVRSRV_ERROR _DevmemValidateParams(IMG_DEVMEM_SIZE_T uiSize,
     }
 
     /* Verify that size is a positive integer multiple of alignment */
-#if 0 // FIXME
+#if 0 // 
     if (uiSize & (uiAlign-1))
     {
         /* Size not a multiple of alignment */
@@ -344,6 +348,10 @@ PVRSRV_ERROR _DevmemImportStructAlloc(IMG_HANDLE hBridge,
 	{
 		goto failILockAlloc;
 	}
+
+#if !defined(__KERNEL__) && defined(SUPPORT_ION)
+	psImport->sCPUImport.iDmaBufFd = -1;
+#endif
 
     *ppsImport = psImport;
     
@@ -589,15 +597,44 @@ PVRSRV_ERROR _DevmemImportStructCPUMap(DEVMEM_IMPORT *psImport)
 	if (psCPUImport->ui32RefCount++ == 0)
 	{
 		_DevmemImportStructAcquire(psImport);
-		eError = OSMMapPMR(psImport->hBridge,
-						   psImport->hPMR,
-						   psImport->uiSize,
-						   &psCPUImport->hOSMMapData,
-						   &psCPUImport->pvCPUVAddr,
-						   &uiMappingLength);
-		if (eError != PVRSRV_OK)
+
+#if !defined(__KERNEL__) && defined(SUPPORT_ION)
+		if (psImport->sCPUImport.iDmaBufFd >= 0)
 		{
-			goto failMap;
+			void *pvCPUVAddr;
+
+			/* For ion imports, use the ion fd and mmap facility to map the
+			 * buffer to user space. We can bypass the services bridge in
+			 * this case and possibly save some time.
+			 *
+			 * 
+*/
+			pvCPUVAddr = mmap(NULL, psImport->uiSize, PROT_READ | PROT_WRITE,
+			                  MAP_SHARED, psImport->sCPUImport.iDmaBufFd, 0);
+
+			if (pvCPUVAddr == MAP_FAILED)
+			{
+				eError = PVRSRV_ERROR_DEVICEMEM_MAP_FAILED;
+				goto failMap;
+			}
+
+			psCPUImport->hOSMMapData = pvCPUVAddr;
+			psCPUImport->pvCPUVAddr = pvCPUVAddr;
+			uiMappingLength = psImport->uiSize;
+		}
+		else
+#endif
+		{
+			eError = OSMMapPMR(psImport->hBridge,
+							   psImport->hPMR,
+							   psImport->uiSize,
+							   &psCPUImport->hOSMMapData,
+							   &psCPUImport->pvCPUVAddr,
+							   &uiMappingLength);
+			if (eError != PVRSRV_OK)
+			{
+				goto failMap;
+			}
 		}
 
 		/* There is no reason the mapping length is different to the size */
@@ -634,19 +671,25 @@ IMG_VOID _DevmemImportStructCPUUnmap(DEVMEM_IMPORT *psImport)
 
 	if (--psCPUImport->ui32RefCount == 0)
 	{
-		/* FIXME: psImport->uiSize is a 64-bit quantity where as the 5th
-		 * argument to OSUnmapPMR is a 32-bit quantity on 32-bit systems
-		 * hence a compiler warning of implicit cast and loss of data.
-		 * Added explicit cast and assert to remove warning.
-		 */
+		
 #if (defined(_WIN32) && !defined(_WIN64)) || (defined(LINUX) && defined(__i386__))
 		PVR_ASSERT(psImport->uiSize<IMG_UINT32_MAX);
 #endif
-		OSMUnmapPMR(psImport->hBridge,
-					psImport->hPMR,
-					psCPUImport->hOSMMapData,
-					psCPUImport->pvCPUVAddr,
-					(IMG_SIZE_T)psImport->uiSize);
+
+#if !defined(__KERNEL__) && defined(SUPPORT_ION)
+		if (psImport->sCPUImport.iDmaBufFd >= 0)
+		{
+			munmap(psCPUImport->hOSMMapData, psImport->uiSize);
+		}
+		else
+#endif
+		{
+			OSMUnmapPMR(psImport->hBridge,
+						psImport->hPMR,
+						psCPUImport->hOSMMapData,
+						psCPUImport->pvCPUVAddr,
+						(IMG_SIZE_T)psImport->uiSize);
+		}
 
 		OSLockRelease(psCPUImport->hLock);
 

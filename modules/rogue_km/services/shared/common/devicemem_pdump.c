@@ -66,7 +66,34 @@ DevmemPDumpLoadMem(DEVMEM_MEMDESC *psMemDesc,
                                    psMemDesc->psImport->hPMR,
                                    psMemDesc->uiOffset + uiOffset,
                                    uiSize,
-                                   uiPDumpFlags);
+                                   uiPDumpFlags,
+                                   IMG_FALSE);
+
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR,
+				"%s: failed with error %d",
+				__FUNCTION__, eError));
+	}
+    PVR_ASSERT(eError == PVRSRV_OK);
+}
+
+IMG_INTERNAL IMG_VOID
+DevmemPDumpLoadZeroMem(DEVMEM_MEMDESC *psMemDesc,
+                   IMG_DEVMEM_OFFSET_T uiOffset,
+                   IMG_DEVMEM_SIZE_T uiSize,
+                   PDUMP_FLAGS_T uiPDumpFlags)
+{
+    PVRSRV_ERROR eError;
+
+    PVR_ASSERT(uiOffset + uiSize <= psMemDesc->psImport->uiSize);
+
+    eError = BridgePMRPDumpLoadMem(psMemDesc->psImport->hBridge,
+                                   psMemDesc->psImport->hPMR,
+                                   psMemDesc->uiOffset + uiOffset,
+                                   uiSize,
+                                   uiPDumpFlags,
+                                   IMG_TRUE);
 
 	if (eError != PVRSRV_OK)
 	{
@@ -122,7 +149,7 @@ DevmemPDumpLoadMemValue64(DEVMEM_MEMDESC *psMemDesc,
     PVR_ASSERT(eError == PVRSRV_OK);
 }
 
-/* FIXME: This should be server side only */
+
 IMG_INTERNAL PVRSRV_ERROR
 DevmemPDumpPageCatBaseToSAddr(DEVMEM_MEMDESC		*psMemDesc,
 							  IMG_DEVMEM_OFFSET_T	*puiMemOffset,
@@ -182,7 +209,7 @@ DevmemPDumpSaveToFile(DEVMEM_MEMDESC *psMemDesc,
     PVR_ASSERT(eError == PVRSRV_OK);
 }
 
-/* FIXME: Remove? */
+
 IMG_INTERNAL IMG_VOID
 DevmemPDumpSaveToFileVirtual(DEVMEM_MEMDESC *psMemDesc,
                              IMG_DEVMEM_OFFSET_T uiOffset,

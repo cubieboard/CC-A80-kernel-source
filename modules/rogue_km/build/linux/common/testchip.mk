@@ -42,12 +42,16 @@ ifeq ($(RGX_BVNC),1.82.4.5)
  $(eval $(call TunableKernelConfigC,TC_APOLLO_ES2,1))
 endif
 
-ifeq ($(PVR_SYSTEM),rgx_tc)
+ifeq ($(PVR_SYSTEM),$(filter $(PVR_SYSTEM),rgx_tc rgx_tc_es2))
 $(eval $(call TunableKernelConfigC,TC_MEMORY_CONFIG,$(TC_MEMORY_CONFIG),\
 Selects the memory configuration to be used. The choices are:_\
 * TC_MEMORY_LOCAL (Rogue and the display controller use local card memory)_\
 * TC_MEMORY_HOST (Rogue and the display controller use system memory)_\
 * TC_MEMORY_HYBRID (Rogue uses system memory and the display controller uses local card memory)))
+endif
+ifeq ($(PVR_SYSTEM), rgx_linux_apollo)
+$(eval $(call BothConfigC,TC_MEMORY_CONFIG,TC_MEMORY_LOCAL))
+$(call $(NonTunableOption,TC_MEMORY_CONFIG))
 endif
 
 ifeq ($(TC_MEMORY_CONFIG),TC_MEMORY_LOCAL)
@@ -56,19 +60,3 @@ endif
 
 $(eval $(call TunableBothConfigC,LMA,))
 $(eval $(call TunableKernelConfigMake,LMA,))
-
-ifeq ($(DISPLAY_CONTROLLER),dc_example)
-$(eval $(call TunableKernelConfigC,DC_EXAMPLE_WIDTH,))
-$(eval $(call TunableKernelConfigC,DC_EXAMPLE_HEIGHT,))
-$(eval $(call TunableKernelConfigC,DC_EXAMPLE_DPI,))
-$(eval $(call TunableKernelConfigC,DC_EXAMPLE_BIT_DEPTH,))
-$(eval $(call TunableKernelConfigC,DC_EXAMPLE_FBC_MODE,))
-endif
-
-ifeq ($(DISPLAY_CONTROLLER),dc_pdp)
-$(eval $(call TunableKernelConfigC,DCPDP_WIDTH,))
-$(eval $(call TunableKernelConfigC,DCPDP_HEIGHT,))
-$(eval $(call TunableKernelConfigC,DCPDP_DPI,))
-$(eval $(call TunableKernelConfigC,DCPDP_DYNAMIC_GTF_TIMING,1))
-$(eval $(call TunableKernelConfigC,DCPDP_NO_INTERRUPTS,))
-endif

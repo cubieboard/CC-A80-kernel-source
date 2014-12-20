@@ -135,7 +135,7 @@ PVRSRV_ERROR SysCreateConfigData(PVRSRV_SYSTEM_CONFIG **ppsSysConfig)
 	 * Setup RGX specific timing data
 	 */
 	gsRGXTimingInfo.ui32CoreClockSpeed        = RGX_SUNXI_CORE_CLOCK_SPEED;
-	gsRGXTimingInfo.bEnableActivePM           = IMG_TRUE;
+	gsRGXTimingInfo.bEnableActivePM           = IMG_FALSE;
 	gsRGXTimingInfo.bEnableRDPowIsland        = IMG_TRUE;
 	gsRGXTimingInfo.ui32ActivePMLatencyms     = SYS_RGX_ACTIVE_POWER_LATENCY_MS;
 
@@ -167,12 +167,12 @@ PVRSRV_ERROR SysCreateConfigData(PVRSRV_SYSTEM_CONFIG **ppsSysConfig)
 	gsDevices[0].aui32PhysHeapID[PVRSRV_DEVICE_PHYS_HEAP_GPU_LOCAL] = 0;
 	gsDevices[0].aui32PhysHeapID[PVRSRV_DEVICE_PHYS_HEAP_CPU_LOCAL] = 0;
 
-	/* Power management on SUNXI system */
+	/* Power management on no SUNXI system */
 	gsDevices[0].pfnPrePowerState       = AwPrePowerState;
 	gsDevices[0].pfnPostPowerState      = AwPostPowerState;
 
 	/* No clock frequency either */
-	gsDevices[0].pfnClockFreqGet        = IMG_NULL;
+	gsDevices[0].pfnClockFreqGet        = AwClockFreqGet;
 
 	/* No interrupt handled either */
 	gsDevices[0].pfnInterruptHandled    = IMG_NULL;
@@ -188,9 +188,9 @@ PVRSRV_ERROR SysCreateConfigData(PVRSRV_SYSTEM_CONFIG **ppsSysConfig)
 	gsSysConfig.uiDeviceCount = sizeof(gsDevices)/sizeof(gsDevices[0]);
 	gsSysConfig.pasDevices = &gsDevices[0];
 
-	/* No power management on no HW system */
-	gsSysConfig.pfnSysPrePowerState = IMG_NULL;
-	gsSysConfig.pfnSysPostPowerState = IMG_NULL;
+        /* No power management on no HW system */
+	gsSysConfig.pfnSysPrePowerState = NULL;
+        gsSysConfig.pfnSysPostPowerState = NULL;
 
 	/* no cache snooping */
 	gsSysConfig.eCacheSnoopingMode = PVRSRV_SYSTEM_SNOOP_NONE;
@@ -231,10 +231,10 @@ PVRSRV_ERROR SysReleaseSystemData(IMG_HANDLE hSysData)
 	return PVRSRV_ERROR_NOT_SUPPORTED;
 }
 
-PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig)
+PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig, DUMPDEBUG_PRINTF_FUNC *pfnDumpDebugPrintf)
 {
 	PVR_UNREFERENCED_PARAMETER(psSysConfig);
-
+	PVR_UNREFERENCED_PARAMETER(pfnDumpDebugPrintf);
 	return PVRSRV_OK;
 }
 
