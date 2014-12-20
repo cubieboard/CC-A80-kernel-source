@@ -21,7 +21,8 @@ drm-usb-y   := drm_usb.o
 drm_kms_helper-y := drm_fb_helper.o drm_crtc_helper.o drm_dp_i2c_helper.o
 drm_kms_helper-$(CONFIG_DRM_LOAD_EDID_FIRMWARE) += drm_edid_load.o
 
-obj-$(CONFIG_DRM_KMS_HELPER) += drm_kms_helper.o
+#obj-$(CONFIG_DRM_KMS_HELPER) += drm_kms_helper.o
+obj-y += drm_kms_helper.o
 
 CFLAGS_drm_trace_points.o := -I$(src)
 
