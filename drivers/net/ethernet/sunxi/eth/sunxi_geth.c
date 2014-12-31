@@ -35,7 +35,6 @@
 #include <linux/netdevice.h>
 
 #include <linux/clk/sunxi_name.h>
-#include <linux/regulator/consumer.h>
 
 #include <mach/sys_config.h>
 #include <mach/gpio.h>
@@ -142,29 +141,14 @@ struct geth_priv {
 	struct clk *geth_clk;
 #endif
 	void __iomem *geth_extclk;
-	struct regulator **power;
-
 	spinlock_t lock;
 	spinlock_t tx_lock;
 };
-
-#ifdef CONFIG_GETH_PHY_POWER
-struct geth_power {
-	unsigned int vol;
-	const char *name;
-};
-
-struct geth_power power_tb[5] = {};
-#endif
-
 
 void sunxi_udelay(int n)
 {
 	udelay(n);
 }
-
-static int geth_stop(struct net_device *ndev);
-static int geth_open(struct net_device *ndev);
 
 #ifdef DEBUG
 static void desc_print(struct dma_desc *desc, int size)
@@ -180,73 +164,6 @@ static void desc_print(struct dma_desc *desc, int size)
 	pr_info("\n");
 #endif
 }
-#endif
-
-#ifdef CONFIG_GETH_PHY_POWER
-static int geth_power_on(struct geth_priv *priv)
-{
-	struct regulator **regu;
-	int ret = 0, i = 0;
-
-	regu = kmalloc(ARRAY_SIZE(power_tb) *
-			sizeof(struct regulator *), GFP_KERNEL);
-	if (!regu)
-		return -1;
-
-	/* Set the voltage */
-	for (i = 0; i < ARRAY_SIZE(power_tb) && power_tb[i].name; i++) {
-		regu[i] = regulator_get(NULL, power_tb[i].name);
-		if (IS_ERR(regu[i])) {
-			ret = -1;
-			goto err;
-		}
-
-		if (power_tb[i].vol != 0) {
-			ret = regulator_set_voltage(regu[i], power_tb[i].vol,
-					power_tb[i].vol);
-			if (ret)
-				goto err;
-		}
-
-		ret = regulator_enable(regu[i]);
-		if (ret) {
-			goto err;
-		}
-		mdelay(3);
-	}
-
-	msleep(100);
-	priv->power = regu;
-	return 0;
-
-err:
-	for(; i > 0; i--) {
-		regulator_disable(regu[i - 1]);
-		regulator_put(regu[i - 1]);
-	}
-	kfree(regu);
-	priv->power = NULL;
-	return ret;
-}
-
-static void geth_power_off(struct geth_priv *priv)
-{
-	struct regulator **regu = priv->power;
-	int i = 0;
-
-	if (priv->power == NULL)
-		return;
-
-	for (i = 0; i < ARRAY_SIZE(power_tb) && power_tb[i].name; i++) {
-		regulator_disable(regu[i]);
-		regulator_put(regu[i]);
-	}
-
-	kfree(regu);
-}
-#else
-#define geth_power_on(a)	(0)
-#define geth_power_off(a)	{}
 #endif
 
 /*
@@ -334,6 +251,7 @@ static void geth_adjust_link(struct net_device *ndev)
 
 static int geth_phy_init(struct net_device *ndev)
 {
+	int err = 0;
 	int value;
 	struct mii_bus *new_bus;
 	struct geth_priv *priv = netdev_priv(ndev);
@@ -355,7 +273,8 @@ static int geth_phy_init(struct net_device *ndev)
 	new_bus->parent = priv->dev;
 	new_bus->priv = ndev;
 
-	if (mdiobus_register(new_bus)) {
+	err = mdiobus_register(new_bus);
+	if (err != 0) {
 		printk(KERN_ERR "%s: Cannot register as MDIO bus\n", new_bus->name);
 		goto reg_fail;
 	}
@@ -394,7 +313,7 @@ err:
 reg_fail:
 	mdiobus_free(new_bus);
 
-	return -EINVAL;
+	return err;
 }
 
 static int geth_phy_release(struct net_device *ndev)
@@ -605,12 +524,17 @@ static int geth_suspend(struct device *dev)
 	spin_lock(&priv->lock);
 
 	netif_device_detach(ndev);
+	netif_stop_queue(ndev);
 
+	napi_disable(&priv->napi);
+
+	sunxi_stop_tx(priv->base);
+	sunxi_stop_rx(priv->base);
+
+	sunxi_mac_disable(priv->base);
 	spin_unlock(&priv->lock);
 
-	device_enable_async_suspend(dev);
-
-	return geth_stop(ndev);
+	return 0;
 }
 
 static int geth_resume(struct device *dev)
@@ -625,24 +549,40 @@ static int geth_resume(struct device *dev)
 
 	netif_device_attach(ndev);
 
+	/* Enable the MAC and DMA */
+	sunxi_mac_enable(priv->base);
+	napi_enable(&priv->napi);
+
+	sunxi_start_tx(priv->base, priv->dma_tx_phy);
+	sunxi_start_rx(priv->base, priv->dma_rx_phy);
+
+	netif_start_queue(ndev);
+
 	spin_unlock(&priv->lock);
 
 	if (ndev->phydev)
 		phy_start(ndev->phydev);
 
-	device_disable_async_suspend(dev);
-
-	return geth_open(ndev);
+	return 0;
 }
 
+static int geth_stop(struct net_device *ndev);
 static int geth_freeze(struct device *dev)
 {
-	return 0;
+	struct net_device *ndev = dev_get_drvdata(dev);
+
+	return geth_stop(ndev);
 }
 
+static int geth_open(struct net_device *ndev);
 static int geth_restore(struct device *dev)
 {
-	return 0;
+	struct net_device *ndev = dev_get_drvdata(dev);
+
+	if (!ndev || !netif_running(ndev))
+		return 0;
+
+	return geth_open(ndev);
 }
 
 static const struct dev_pm_ops geth_pm_ops = {
@@ -778,12 +718,6 @@ static int geth_open(struct net_device *ndev)
 	struct geth_priv *priv = netdev_priv(ndev);
 	int ret = 0;
 
-	ret = geth_power_on(priv);
-	if (ret) {
-		netdev_err(ndev, "Power on is failed\n");
-		ret = -EINVAL;
-	}
-
 	geth_clk_enable(priv);
 
 	ret = sunxi_mac_reset((void *)priv->base, &sunxi_udelay, 10000);
@@ -858,7 +792,6 @@ static int geth_stop(struct net_device *ndev)
 	sunxi_mac_disable(priv->base);
 
 	geth_clk_disable(priv);
-	geth_power_off(priv);
 
 	return 0;
 }
@@ -1398,49 +1331,6 @@ static const struct ethtool_ops geth_ethtool_ops = {
  *
  *
  ****************************************************************************/
-static int geth_script_parse(struct platform_device *pdev)
-{
-#ifdef CONFIG_GETH_SCRIPT_SYS
-	script_item_value_type_e  type;
-	script_item_u item;
-#ifdef CONFIG_GETH_PHY_POWER
-	char power[20];
-	int cnt;
-#endif
-
-	type = script_get_item((char *)dev_name(&pdev->dev), "gmac_used", &item);
-	if (SCIRPT_ITEM_VALUE_TYPE_INT != type)
-		return -EINVAL;
-
-	if (!item.val) {
-		printk(KERN_WARNING "%s not be used\n", dev_name(&pdev->dev));
-		return -EINVAL;
-	}
-
-#ifdef CONFIG_GETH_PHY_POWER
-	memset(power_tb, 0, sizeof(power_tb));
-	for (cnt = 0; cnt < ARRAY_SIZE(power_tb); cnt++) {
-		char *vol;
-		size_t len;
-		snprintf(power, 15, "gmac_power%u", (cnt+1));
-		type = script_get_item((char *)dev_name(&pdev->dev), power, &item);
-		if(SCIRPT_ITEM_VALUE_TYPE_STR != type)
-			continue;
-
-		len = strlen((char *)item.val);
-		vol = strnchr((const char *)item.val, len, ':');
-		if (vol) {
-			len = (size_t)(vol - (char *)item.val);
-			power_tb[cnt].vol = simple_strtoul(++vol, NULL, 0);
-		}
-
-		power_tb[cnt].name = kstrndup((char *)item.val, len, GFP_KERNEL);
-	}
-#endif
-#endif
-	return 0;
-}
-
 static int geth_sys_request(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
@@ -1554,10 +1444,6 @@ static int geth_probe(struct platform_device *pdev)
 	struct net_device *ndev = NULL;
 	struct geth_priv *priv;
 
-	ret = geth_script_parse(pdev);
-	if (ret)
-		return -EINVAL;
-
 	ndev = alloc_etherdev(sizeof(struct geth_priv));
 	if (!ndev) {
 		printk(KERN_ERR "Error: Failed to alloc netdevice\n");
@@ -1658,14 +1544,6 @@ static int geth_remove(struct platform_device *pdev)
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct geth_priv *priv = netdev_priv(ndev);
 	struct resource *res;
-#if defined(CONFIG_GETH_PHY_POWER)
-	int i;
-
-	for (i=0; i < ARRAY_SIZE(power_tb); i++) {
-		if (power_tb[i].name)
-			kfree(power_tb[i].name);
-	}
-#endif
 
 	netif_napi_del(&priv->napi);
 	unregister_netdev(ndev);
