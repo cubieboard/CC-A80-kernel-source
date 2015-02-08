@@ -130,12 +130,14 @@ extern int desc_get_tx_ls(struct dma_desc *desc);
 extern int desc_rx_frame_len(struct dma_desc *desc);
 
 extern int sunxi_mac_reset(void *iobase, void (*mdelay)(int), int n);
-extern void sunxi_geth_register(void *iobase, int version);
+extern void sunxi_geth_register(void *iobase, int version, unsigned int div);
 
-#ifdef CONFIG_ARCH_SUN8IW6
-#define HW_VERSION	1
-#else
+#if defined(CONFIG_ARCH_SUN8IW3) \
+	|| defined(CONFIG_ARCH_SUN9IW1) \
+	|| defined(CONFIG_ARCH_SUN7I)
 #define HW_VERSION	0
+#else
+#define HW_VERSION	1
 #endif
 
 #endif

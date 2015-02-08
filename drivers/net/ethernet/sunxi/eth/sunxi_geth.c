@@ -11,41 +11,44 @@
  * GNU General Public License for more details.
  *
  ********************************************************************************/
-#include <linux/ip.h>
-#include <linux/if.h>
-#include <linux/tcp.h>
 #include <linux/clk.h>
 #include <linux/mii.h>
-#include <linux/slab.h>
 #include <linux/gpio.h>
 #include <linux/crc32.h>
 #include <linux/skbuff.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/ethtool.h>
-#include <linux/if_vlan.h>
-#include <linux/if_ether.h>
-#include <linux/prefetch.h>
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
-#include <linux/ctype.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pinctrl/pinctrl.h>
-#include <linux/netdevice.h>
+#include <linux/crypto.h>
+#include <linux/err.h>
+#include <linux/scatterlist.h>
 
 #include <linux/clk/sunxi_name.h>
+#include <linux/regulator/consumer.h>
 
 #include <mach/sys_config.h>
 #include <mach/gpio.h>
+#include <mach/sunxi-chip.h>
 
 #include "sunxi_geth.h"
 #include "sunxi_geth_status.h"
 
+#ifndef GMAC_CLK
+#define GMAC_CLK "gmac"
+#endif
+
+#ifndef EPHY_CLK
+#define EPHY_CLK "ephy"
+#endif
+
 #define DMA_DESC_RX	256
 #define DMA_DESC_TX	256
-#define BUDGET		(DMA_DESC_RX/4)
-#define TX_THRESH	(DMA_DESC_TX/4)
+#define BUDGET		(dma_desc_rx/4)
+#define TX_THRESH	(dma_desc_tx/4)
 
 #define HASH_TABLE_SIZE	64
 #define MAX_BUF_SZ	(SZ_2K - 1)
@@ -128,6 +131,10 @@ struct geth_priv {
 	int link;
 	int speed;
 	int duplex;
+#define INT_PHY 0
+#define EXT_PHY 1
+	int phy_ext;
+	int phy_interface;
 
 	void __iomem *base;
 #ifndef CONFIG_GETH_SCRIPT_SYS
@@ -139,16 +146,35 @@ struct geth_priv {
 	void __iomem *clkbase;
 #else
 	struct clk *geth_clk;
+	struct clk *ephy_clk;
 #endif
 	void __iomem *geth_extclk;
+	struct regulator **power;
+	bool is_suspend;
+
 	spinlock_t lock;
 	spinlock_t tx_lock;
 };
+
+#ifdef CONFIG_GETH_PHY_POWER
+struct geth_power {
+	unsigned int vol;
+	const char *name;
+};
+
+struct geth_power power_tb[5] = {};
+#endif
+
 
 void sunxi_udelay(int n)
 {
 	udelay(n);
 }
+
+static int geth_stop(struct net_device *ndev);
+static int geth_open(struct net_device *ndev);
+static void geth_tx_complete(struct geth_priv *priv);
+static void geth_rx_refill(struct net_device *ndev);
 
 #ifdef DEBUG
 static void desc_print(struct dma_desc *desc, int size)
@@ -158,13 +184,100 @@ static void desc_print(struct dma_desc *desc, int size)
 	for (i = 0; i < size; i++) {
 		struct dma_desc *x = (desc + i);
 		pr_info("\t%d [0x%08x]: %08x %08x %08x %08x\n",
-		       i, (unsigned int)virt_to_phys(&desc[i]),
+		       i, (unsigned int)(&desc[i]),
 		       x->desc[0], x->desc[1], x->desc[2], x->desc[3]);
 	}
 	pr_info("\n");
 #endif
 }
 #endif
+
+static int geth_power_on(struct geth_priv *priv)
+{
+	int value;
+#ifdef CONFIG_GETH_PHY_POWER
+	struct regulator **regu;
+	int ret = 0, i = 0;
+
+	regu = kmalloc(ARRAY_SIZE(power_tb) *
+			sizeof(struct regulator *), GFP_KERNEL);
+	if (!regu)
+		return -1;
+
+	/* Set the voltage */
+	for (i = 0; i < ARRAY_SIZE(power_tb) && power_tb[i].name; i++) {
+		regu[i] = regulator_get(NULL, power_tb[i].name);
+		if (IS_ERR(regu[i])) {
+			ret = -1;
+			goto err;
+		}
+
+		if (power_tb[i].vol != 0) {
+			ret = regulator_set_voltage(regu[i], power_tb[i].vol,
+					power_tb[i].vol);
+			if (ret)
+				goto err;
+		}
+
+		ret = regulator_enable(regu[i]);
+		if (ret) {
+			goto err;
+		}
+		mdelay(3);
+	}
+
+	msleep(300);
+	priv->power = regu;
+#endif
+
+	value = readl(priv->geth_extclk + GETH_CLK_REG);
+	if (priv->phy_ext == INT_PHY) {
+		value |= (1 << 15);
+		value &= ~(1 << 16);
+		value |= (3 << 17);
+	} else {
+		value &= ~(1 << 15);
+		value |= (1 << 16);
+	}
+	writel(value, priv->geth_extclk + GETH_CLK_REG);
+
+	return 0;
+
+#ifdef CONFIG_GETH_PHY_POWER
+err:
+	for(; i > 0; i--) {
+		regulator_disable(regu[i - 1]);
+		regulator_put(regu[i - 1]);
+	}
+	kfree(regu);
+	priv->power = NULL;
+	return ret;
+#endif
+}
+
+static void geth_power_off(struct geth_priv *priv)
+{
+	int value;
+#ifdef CONFIG_GETH_PHY_POWER
+	struct regulator **regu = priv->power;
+	int i = 0;
+
+	if (priv->power == NULL)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(power_tb) && power_tb[i].name; i++) {
+		regulator_disable(regu[i]);
+		regulator_put(regu[i]);
+	}
+	kfree(regu);
+#endif
+
+	if (priv->phy_ext == INT_PHY) {
+		value = readl(priv->geth_extclk + GETH_CLK_REG);
+		value |= (1 << 16);
+		writel(value, priv->geth_extclk + GETH_CLK_REG);
+	}
+}
 
 /*
  * PHY interface operations
@@ -173,7 +286,6 @@ static int geth_mdio_read(struct mii_bus *bus, int phyaddr, int phyreg)
 {
 	struct net_device *ndev = bus->priv;
 	struct geth_priv *priv = netdev_priv(ndev);
-
 
 	return (int)sunxi_mdio_read(priv->base,  phyaddr, phyreg);
 }
@@ -208,7 +320,7 @@ static void geth_adjust_link(struct net_device *ndev)
 		return;
 
 	spin_lock_irqsave(&priv->lock, flags);
-	if (phydev->link != PHY_DOWN) {
+	if (phydev->link) {
 		/* Now we make sure that we can be in full duplex mode.
 		 * If not, we operate in half-duplex mode. */
 		if (phydev->duplex != priv->duplex) {
@@ -226,19 +338,35 @@ static void geth_adjust_link(struct net_device *ndev)
 		}
 
 
-		if (priv->link == PHY_DOWN) {
+		if (priv->link == 0) {
 			new_state = 1;
 			priv->link = phydev->link;
 		}
-		sunxi_set_link_mode(priv->base, priv->duplex, priv->speed);
+
+		/* Fix the A version chip mode, it not work at 1000M mode */
+		if (sunxi_get_soc_ver() == SUN9IW1P1_REV_A
+				&& priv->speed == SPEED_1000
+				&& phydev->link == 1){
+			priv->speed = 0;
+			priv->link = 0;
+			priv->duplex = -1;
+			phydev->speed = SPEED_100;
+			phydev->autoneg = AUTONEG_DISABLE;
+			phydev->advertising &= ~ADVERTISED_Autoneg;
+			phydev->state = PHY_UP;
+			new_state = 0;
+		}
+
+		if (new_state)
+			sunxi_set_link_mode(priv->base, priv->duplex, priv->speed);
 
 #ifdef LOOPBACK_DEBUG
 		phydev->state = PHY_FORCING;
 #endif
 
-	} else if (priv->link) {
+	} else if (priv->link != phydev->link) {
 		new_state = 1;
-		priv->link = PHY_DOWN;
+		priv->link = 0;
 		priv->speed = 0;
 		priv->duplex = -1;
 	}
@@ -251,7 +379,6 @@ static void geth_adjust_link(struct net_device *ndev)
 
 static int geth_phy_init(struct net_device *ndev)
 {
-	int err = 0;
 	int value;
 	struct mii_bus *new_bus;
 	struct geth_priv *priv = netdev_priv(ndev);
@@ -273,8 +400,7 @@ static int geth_phy_init(struct net_device *ndev)
 	new_bus->parent = priv->dev;
 	new_bus->priv = ndev;
 
-	err = mdiobus_register(new_bus);
-	if (err != 0) {
+	if (mdiobus_register(new_bus)) {
 		printk(KERN_ERR "%s: Cannot register as MDIO bus\n", new_bus->name);
 		goto reg_fail;
 	}
@@ -290,7 +416,7 @@ static int geth_phy_init(struct net_device *ndev)
 	phydev->irq = PHY_POLL;
 
 	phydev = phy_connect(ndev, dev_name(&phydev->dev), &geth_adjust_link,
-			0, PHY_INTERFACE_MODE_RGMII);
+			0, priv->phy_interface);
 	if (IS_ERR(phydev)) {
 		netdev_err(ndev, "Could not attach to PHY\n");
 		goto err;
@@ -298,8 +424,34 @@ static int geth_phy_init(struct net_device *ndev)
 		netdev_info(ndev, "%s: PHY ID %08x at %d IRQ %s (%s)\n",
 				ndev->name, phydev->phy_id, phydev->addr,
 				"poll", dev_name(&phydev->dev));
+#if defined(CONFIG_ARCH_SUN8IW8) || defined(CONFIG_ARCH_SUN8IW7)
+		if (priv->phy_ext == INT_PHY) {
+			phy_write(phydev, 0x1f, 0x013d);
+			phy_write(phydev, 0x10, 0x3ffe);
+			phy_write(phydev, 0x1f, 0x063d);
+			phy_write(phydev, 0x13, 0x8000);
+			phy_write(phydev, 0x1f, 0x023d);
+			phy_write(phydev, 0x18, 0x1000);
+			phy_write(phydev, 0x1f, 0x063d);
+			phy_write(phydev, 0x15, 0x132c);
+			phy_write(phydev, 0x1f, 0x013d);
+			phy_write(phydev, 0x13, 0xd602);
+			phy_write(phydev, 0x17, 0x003b);
+			phy_write(phydev, 0x1f, 0x063d);
+			phy_write(phydev, 0x14, 0x7088);
+			phy_write(phydev, 0x1f, 0x033d);
+			phy_write(phydev, 0x11, 0x8530);
+			phy_write(phydev, 0x1f, 0x003d);
+		}
+
+#endif
+		phy_write(phydev, MII_BMCR, BMCR_RESET);
+		while (BMCR_RESET & phy_read(phydev, MII_BMCR))
+			msleep(30);
+
 		value = phy_read(phydev, MII_BMCR);
 		phy_write(phydev, MII_BMCR, (value & ~BMCR_PDOWN));
+
 	}
 
 	phydev->supported &= PHY_GBIT_FEATURES;
@@ -313,7 +465,7 @@ err:
 reg_fail:
 	mdiobus_free(new_bus);
 
-	return err;
+	return -EINVAL;
 }
 
 static int geth_phy_release(struct net_device *ndev)
@@ -416,8 +568,6 @@ static int geth_dma_desc_init(struct net_device *ndev)
 	if (!priv->dma_tx)
 		goto dma_tx_err;
 
-	memset(priv->dma_tx, 0, dma_desc_tx * sizeof(struct dma_desc));
-
 	priv->dma_rx = dma_alloc_coherent(priv->dev,
 					dma_desc_rx *
 					sizeof(struct dma_desc),
@@ -426,29 +576,17 @@ static int geth_dma_desc_init(struct net_device *ndev)
 	if (!priv->dma_rx)
 		goto dma_rx_err;
 
-	memset(priv->dma_rx, 0, dma_desc_rx * sizeof(struct dma_desc));
-
 	priv->buf_sz = buf_sz;
-
-	desc_init_chain(priv->dma_rx, priv->dma_rx_phy, dma_desc_rx);
-	desc_init_chain(priv->dma_tx, priv->dma_tx_phy, dma_desc_tx);
-
-	priv->rx_clean = 0;
-	priv->rx_dirty = 0;
-	geth_rx_refill(ndev);
-
-	priv->tx_clean = 0;
-	priv->tx_dirty = 0;
 
 	return 0;
 
-tx_sk_err:
-	kfree(priv->rx_sk);
-dma_tx_err:
-	kfree(priv->tx_sk);
 dma_rx_err:
 	dma_free_coherent(priv->dev, dma_desc_rx * sizeof(struct dma_desc),
 			priv->dma_tx, priv->dma_tx_phy);
+dma_tx_err:
+	kfree(priv->tx_sk);
+tx_sk_err:
+	kfree(priv->rx_sk);
 
 	return -ENOMEM;
 
@@ -489,10 +627,6 @@ static void geth_free_tx_sk(struct geth_priv *priv)
 
 static void geth_free_dma_desc(struct geth_priv *priv)
 {
-	/* Release the DMA TX/RX socket buffers */
-	geth_free_rx_sk(priv);
-	geth_free_tx_sk(priv);
-
 	/* Free the region of consistent memory previously allocated for
 	 * the DMA */
 	dma_free_coherent(NULL, dma_desc_tx * sizeof(struct dma_desc),
@@ -518,21 +652,15 @@ static int geth_suspend(struct device *dev)
 	if (!ndev || !netif_running(ndev))
 		return 0;
 
-	if (ndev->phydev)
-		phy_stop(ndev->phydev);
+	priv->is_suspend = true;
 
 	spin_lock(&priv->lock);
-
 	netif_device_detach(ndev);
-	netif_stop_queue(ndev);
-
-	napi_disable(&priv->napi);
-
-	sunxi_stop_tx(priv->base);
-	sunxi_stop_rx(priv->base);
-
-	sunxi_mac_disable(priv->base);
 	spin_unlock(&priv->lock);
+
+	geth_stop(ndev);
+
+	device_enable_async_suspend(dev);
 
 	return 0;
 }
@@ -541,48 +669,31 @@ static int geth_resume(struct device *dev)
 {
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct geth_priv *priv = netdev_priv(ndev);
+	int ret;
 
 	if (!netif_running(ndev))
 		return 0;
 
 	spin_lock(&priv->lock);
-
 	netif_device_attach(ndev);
-
-	/* Enable the MAC and DMA */
-	sunxi_mac_enable(priv->base);
-	napi_enable(&priv->napi);
-
-	sunxi_start_tx(priv->base, priv->dma_tx_phy);
-	sunxi_start_rx(priv->base, priv->dma_rx_phy);
-
-	netif_start_queue(ndev);
-
 	spin_unlock(&priv->lock);
 
-	if (ndev->phydev)
-		phy_start(ndev->phydev);
+	ret = geth_open(ndev);
+	priv->is_suspend = false;
 
+	device_disable_async_suspend(dev);
+
+	return ret;
+}
+
+static int geth_freeze(struct device *dev)
+{
 	return 0;
 }
 
-static int geth_stop(struct net_device *ndev);
-static int geth_freeze(struct device *dev)
-{
-	struct net_device *ndev = dev_get_drvdata(dev);
-
-	return geth_stop(ndev);
-}
-
-static int geth_open(struct net_device *ndev);
 static int geth_restore(struct device *dev)
 {
-	struct net_device *ndev = dev_get_drvdata(dev);
-
-	if (!ndev || !netif_running(ndev))
-		return 0;
-
-	return geth_open(ndev);
+	return 0;
 }
 
 static const struct dev_pm_ops geth_pm_ops = {
@@ -600,6 +711,63 @@ static const struct dev_pm_ops geth_pm_ops;
  *
  *
  ****************************************************************************/
+extern int sunxi_get_soc_chipid(uint8_t *chip_id);
+static void geth_chip_hwaddr(u8 *addr)
+{
+#define MD5_SIZE	16
+#define CHIP_SIZE	16
+
+	struct crypto_hash *tfm;
+	struct hash_desc desc;
+	struct scatterlist sg;
+	u8 result[MD5_SIZE];
+	u8 chipid[CHIP_SIZE];
+	int i = 0;
+	int ret = -1;
+
+	memset(chipid, 0, sizeof(chipid));
+	memset(result, 0, sizeof(result));
+
+	sunxi_get_soc_chipid((u8 *)chipid);
+
+	tfm = crypto_alloc_hash("md5", 0, CRYPTO_ALG_ASYNC);
+	if (IS_ERR(tfm)) {
+		pr_err("Failed to alloc md5\n");
+		return;
+	}
+	desc.tfm = tfm;
+	desc.flags = 0;
+
+	ret = crypto_hash_init(&desc);
+	if (ret < 0) {
+		pr_err("crypto_hash_init() failed\n");
+		goto out;
+	}
+
+	sg_init_one(&sg, chipid, sizeof(chipid) - 1);
+	ret = crypto_hash_update(&desc, &sg, sizeof(chipid) - 1);
+	if (ret < 0) {
+		pr_err("crypto_hash_update() failed for id\n");
+		goto out;
+	}
+
+	crypto_hash_final(&desc, result);
+	if (ret < 0) {
+		pr_err("crypto_hash_final() failed for result\n");
+		goto out;
+	}
+
+	/* Choose md5 result's [0][2][4][6][8][10] byte as mac address */
+	for (i = 0; i < ETH_ALEN; i++) {
+		addr[i] = result[2*i];
+	}
+	addr[0] &= 0xfe;     /* clear multicast bit */
+	addr[0] |= 0x02;     /* set local assignment bit (IEEE802) */
+
+out:
+	crypto_free_hash(tfm);
+}
+
 static void geth_check_addr(struct net_device *ndev, unsigned char *mac)
 {
 	int i;
@@ -608,6 +776,10 @@ static void geth_check_addr(struct net_device *ndev, unsigned char *mac)
 	if (!is_valid_ether_addr(ndev->dev_addr)) {
 		for (i=0; i<ETH_ALEN; i++, p++)
 			ndev->dev_addr[i] = simple_strtoul(p, &p, 16);
+
+		if (!is_valid_ether_addr(ndev->dev_addr)) {
+			geth_chip_hwaddr(ndev->dev_addr);
+		}
 
 		if (!is_valid_ether_addr(ndev->dev_addr)) {
 			random_ether_addr(ndev->dev_addr);
@@ -631,10 +803,12 @@ static void geth_clk_enable(struct geth_priv *priv)
 	value |= GETH_RESET_BIT;
 	writel(value, priv->clkbase + AHB1_MOD_RESET);
 #else
-		clk_prepare_enable(priv->geth_clk);
+	if (priv->phy_ext == INT_PHY)
+		clk_prepare_enable(priv->ephy_clk);
+	clk_prepare_enable(priv->geth_clk);
 #endif
 
-	phy_interface = PHY_INTERFACE_MODE_RGMII;
+	phy_interface = priv->phy_interface;
 
 	clk_value = readl(priv->geth_extclk + GETH_CLK_REG);
 	if (phy_interface == PHY_INTERFACE_MODE_RGMII)
@@ -662,6 +836,8 @@ static void geth_clk_disable(struct geth_priv *priv)
 	value &= ~GETH_RESET_BIT;
 	writel(value, priv->clkbase + AHB1_MOD_RESET);
 #else
+	if (priv->phy_ext == INT_PHY)
+		clk_disable_unprepare(priv->ephy_clk);
 	clk_disable_unprepare(priv->geth_clk);
 #endif
 }
@@ -672,6 +848,7 @@ static void geth_tx_err(struct geth_priv *priv)
 
 	sunxi_stop_tx(priv->base);
 
+	geth_free_tx_sk(priv);
 	memset(priv->dma_tx, 0, dma_desc_tx * sizeof(struct dma_desc));
 	desc_init_chain(priv->dma_tx, priv->dma_tx_phy, dma_desc_tx);
 	priv->tx_dirty = 0;
@@ -718,58 +895,72 @@ static int geth_open(struct net_device *ndev)
 	struct geth_priv *priv = netdev_priv(ndev);
 	int ret = 0;
 
-	geth_clk_enable(priv);
-
-	ret = sunxi_mac_reset((void *)priv->base, &sunxi_udelay, 10000);
+	ret = geth_power_on(priv);
 	if (ret) {
-		netdev_err(ndev, "Initialize hardware error\n");
-		goto err;
+		netdev_err(ndev, "Power on is failed\n");
+		ret = -EINVAL;
 	}
+
+	geth_clk_enable(priv);
 
 	ret = geth_phy_init(ndev);
 	if (ret)
 		goto err;
 
-	sunxi_mac_init(priv->base, txmode, rxmode);
-	sunxi_set_umac(priv->base, ndev->dev_addr, 0);
-
-	skb_queue_head_init(&priv->rx_recycle);
-	ret = geth_dma_desc_init(ndev);
+	ret = sunxi_mac_reset((void *)priv->base, &sunxi_udelay, 10000);
 	if (ret) {
-		ret = -EINVAL;
+		netdev_err(ndev, "Initialize hardware error\n");
 		goto desc_err;
 	}
 
-	ret = request_irq(ndev->irq, geth_interrupt, IRQF_SHARED,
-			dev_name(priv->dev), ndev);
-	if (unlikely(ret < 0)) {
-		netdev_err(ndev, "Could not request irq %d, error: %d\n",
-				ndev->irq, ret);
-		goto irq_err;
+	sunxi_mac_init(priv->base, txmode, rxmode);
+	sunxi_set_umac(priv->base, ndev->dev_addr, 0);
+
+	if (!priv->is_suspend) {
+		skb_queue_head_init(&priv->rx_recycle);
+		ret = geth_dma_desc_init(ndev);
+		if (ret) {
+			ret = -EINVAL;
+			goto desc_err;
+		}
 	}
+
+	memset(priv->dma_tx, 0, dma_desc_tx * sizeof(struct dma_desc));
+	memset(priv->dma_rx, 0, dma_desc_rx * sizeof(struct dma_desc));
+
+	desc_init_chain(priv->dma_rx, priv->dma_rx_phy, dma_desc_rx);
+	desc_init_chain(priv->dma_tx, priv->dma_tx_phy, dma_desc_tx);
+
+	priv->rx_clean = priv->rx_dirty = 0;
+	priv->tx_clean = priv->tx_dirty = 0;
+	geth_rx_refill(ndev);
 
 	/* Extra statistics */
 	memset(&priv->xstats, 0, sizeof(struct geth_extra_stats));
 
-	napi_enable(&priv->napi);
-	netif_start_queue(ndev);
-
 	if (ndev->phydev)
 		phy_start(ndev->phydev);
 
-	sunxi_start_rx(priv->base, priv->dma_rx_phy);
-	sunxi_start_tx(priv->base, priv->dma_tx_phy);
+	sunxi_start_rx(priv->base, (unsigned long)((struct dma_desc *)
+				priv->dma_rx_phy + priv->rx_dirty));
+	sunxi_start_tx(priv->base, (unsigned long)((struct dma_desc *)
+				priv->dma_tx_phy + priv->tx_clean));
+
+	napi_enable(&priv->napi);
+	netif_start_queue(ndev);
 
 	/* Enable the Rx/Tx */
 	sunxi_mac_enable(priv->base);
 
 	return 0;
-irq_err:
-	geth_free_dma_desc(priv);
+
 desc_err:
 	geth_phy_release(ndev);
 err:
 	geth_clk_disable(priv);
+	if (priv->is_suspend)
+		napi_enable(&priv->napi);
+
 	return ret;
 }
 
@@ -779,19 +970,29 @@ static int geth_stop(struct net_device *ndev)
 
 	netif_stop_queue(ndev);
 	napi_disable(&priv->napi);
-	free_irq(ndev->irq, ndev);
-	skb_queue_purge(&priv->rx_recycle);
 
 	netif_carrier_off(ndev);
 
-	/* Release and free the Rx/Tx resources */
-	geth_free_dma_desc(priv);
+	/* Release PHY resources */
 	geth_phy_release(ndev);
 
 	/* Disable Rx/Tx */
 	sunxi_mac_disable(priv->base);
 
 	geth_clk_disable(priv);
+	geth_power_off(priv);
+
+	netif_tx_lock_bh(ndev);
+	/* Release the DMA TX/RX socket buffers */
+	geth_free_rx_sk(priv);
+	geth_free_tx_sk(priv);
+	netif_tx_unlock_bh(ndev);
+
+	/* Ensure that hareware have been stopped */
+	if (!priv->is_suspend) {
+		skb_queue_purge(&priv->rx_recycle);
+		geth_free_dma_desc(priv);
+	}
 
 	return 0;
 }
@@ -867,6 +1068,7 @@ static netdev_tx_t geth_xmit(struct sk_buff *skb, struct net_device *ndev)
 	int nfrags = skb_shinfo(skb)->nr_frags;
 	dma_addr_t paddr;
 
+	spin_lock(&priv->tx_lock);
 	if (unlikely(circ_space(priv->tx_dirty, priv->tx_clean,
 			dma_desc_tx) < (nfrags + 1))) {
 
@@ -874,6 +1076,7 @@ static netdev_tx_t geth_xmit(struct sk_buff *skb, struct net_device *ndev)
 			netdev_err(ndev, "%s: BUG! Tx Ring full when queue awake\n", __func__);
 			netif_stop_queue(ndev);
 		}
+		spin_unlock(&priv->tx_lock);
 
 		return NETDEV_TX_BUSY;
 	}
@@ -931,7 +1134,6 @@ static netdev_tx_t geth_xmit(struct sk_buff *skb, struct net_device *ndev)
 		entry = circ_inc(entry, dma_desc_tx);
 	}
 
-	spin_lock(&priv->tx_lock);
 	ndev->stats.tx_bytes += skb->len;
 	priv->tx_dirty = entry;
 	desc_tx_close(first, desc, csum_insert);
@@ -1305,7 +1507,7 @@ static void geth_ethtool_getdrvinfo(struct net_device *ndev,
 {
 	strlcpy(info->driver, "sunxi_geth", sizeof(info->driver));
 
-#define DRV_MODULE_VERSION "SUNXI Gbgit driver V0.1"
+#define DRV_MODULE_VERSION "SUNXI Gbgit driver V1.1"
 
 	strcpy(info->version, DRV_MODULE_VERSION);
 	info->fw_version[0] = '\0';
@@ -1331,6 +1533,74 @@ static const struct ethtool_ops geth_ethtool_ops = {
  *
  *
  ****************************************************************************/
+static int geth_script_parse(struct platform_device *pdev)
+{
+#ifdef CONFIG_GETH_SCRIPT_SYS
+	struct net_device *ndev = platform_get_drvdata(pdev);
+	struct geth_priv *priv = netdev_priv(ndev);
+	script_item_value_type_e  type;
+	script_item_u item;
+#ifdef CONFIG_GETH_PHY_POWER
+	char power[20];
+	int cnt;
+#endif
+
+	type = script_get_item((char *)dev_name(&pdev->dev), "gmac_used", &item);
+	if (SCIRPT_ITEM_VALUE_TYPE_INT != type)
+		return -EINVAL;
+
+	switch(item.val) {
+	case 0:
+		printk(KERN_WARNING "%s not be used\n", dev_name(&pdev->dev));
+		return -EINVAL;
+	case 1:
+		priv->phy_ext = EXT_PHY;
+		break;
+	case 2:
+	default:
+		priv->phy_ext = INT_PHY;
+		break;
+	}
+
+#ifdef CONFIG_GETH_PHY_POWER
+	memset(power_tb, 0, sizeof(power_tb));
+	for (cnt = 0; cnt < ARRAY_SIZE(power_tb); cnt++) {
+		char *vol;
+		size_t len;
+		snprintf(power, 15, "gmac_power%u", (cnt+1));
+		type = script_get_item((char *)dev_name(&pdev->dev), power, &item);
+		if(SCIRPT_ITEM_VALUE_TYPE_STR != type)
+			continue;
+
+		len = strlen((char *)item.val);
+		vol = strnchr((const char *)item.val, len, ':');
+		if (vol) {
+			len = (size_t)(vol - (char *)item.val);
+			power_tb[cnt].vol = simple_strtoul(++vol, NULL, 0);
+		}
+
+		power_tb[cnt].name = kstrndup((char *)item.val, len, GFP_KERNEL);
+	}
+#endif
+
+	/* Default mode is PHY_INTERFACE_MODE_RGMII */
+	priv->phy_interface = PHY_INTERFACE_MODE_RGMII;
+	type = script_get_item((char *)dev_name(&pdev->dev), "gmac_mode", &item);
+	if (SCIRPT_ITEM_VALUE_TYPE_STR == type) {
+		if (!strncasecmp((char *)item.val, "MII", 3))
+			priv->phy_interface = PHY_INTERFACE_MODE_MII;
+		else if(!strncasecmp((char *)item.val, "GMII", 4))
+			priv->phy_interface = PHY_INTERFACE_MODE_GMII;
+		else if(!strncasecmp((char *)item.val, "RMII", 4))
+			priv->phy_interface = PHY_INTERFACE_MODE_RMII;
+	}
+
+	if (priv->phy_ext == INT_PHY)
+		priv->phy_interface = PHY_INTERFACE_MODE_MII;
+#endif
+	return 0;
+}
+
 static int geth_sys_request(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
@@ -1348,6 +1618,7 @@ static int geth_sys_request(struct platform_device *pdev)
 	priv->geth_extclk = ioremap(res->start, resource_size(res));
 	if (unlikely(!priv->geth_extclk)) {
 		ret = -ENOMEM;
+		printk(KERN_ERR "Failed to ioremap the address of gmac register\n");
 		goto out;
 	}
 
@@ -1370,6 +1641,16 @@ static int geth_sys_request(struct platform_device *pdev)
 		ret = -EINVAL;
 		goto out;
 	}
+
+	if (priv->phy_ext == INT_PHY) {
+		priv->ephy_clk = clk_get(&pdev->dev, EPHY_CLK);
+		if (unlikely(!priv->ephy_clk || IS_ERR(priv->ephy_clk))) {
+			printk(KERN_ERR "ERROR: Get ephy clock is failed\n");
+			ret = -EINVAL;
+			clk_put(priv->geth_clk);
+			goto out;
+		}
+	}
 #endif
 
 #ifndef CONFIG_GETH_SCRIPT_SYS
@@ -1391,10 +1672,13 @@ static int geth_sys_request(struct platform_device *pdev)
 		((readl(priv->gpiobase + PA_CFG2) >> 8) << 8),
 		priv->gpiobase + PA_CFG2);
 #else
-	priv->pinctrl = devm_pinctrl_get_select_default(&pdev->dev);
-	if (IS_ERR_OR_NULL(priv->pinctrl)) {
-		ret = -EINVAL;
-		goto pin_err;
+	if (priv->phy_ext != INT_PHY) {
+		priv->pinctrl = devm_pinctrl_get_select_default(&pdev->dev);
+		if (IS_ERR_OR_NULL(priv->pinctrl)) {
+			printk(KERN_ERR "gmac: devm_pinctrl is failed\n");
+			ret = -EINVAL;
+			goto pin_err;
+		}
 	}
 #endif
 	return 0;
@@ -1426,6 +1710,9 @@ static void geth_sys_release(struct platform_device *pdev)
 #ifndef CONFIG_GETH_CLK_SYS
 	iounmap((void *)priv->clkbase);
 #else
+	if (priv->phy_ext == INT_PHY && priv->ephy_clk)
+		clk_put(priv->ephy_clk);
+
 	if (priv->geth_clk)
 		clk_put(priv->geth_clk);
 #endif
@@ -1452,6 +1739,11 @@ static int geth_probe(struct platform_device *pdev)
 	SET_NETDEV_DEV(ndev, &pdev->dev);
 	priv = netdev_priv(ndev);
 	platform_set_drvdata(pdev, ndev);
+
+	/* Must set private data to pdev, before call it */
+	ret = geth_script_parse(pdev);
+	if (ret)
+		goto out_err;
 
 	ret = geth_sys_request(pdev);
 	if (ret)
@@ -1484,7 +1776,14 @@ static int geth_probe(struct platform_device *pdev)
 		printk(KERN_ERR "%s: ERROR: MAC IRQ configuration "
 		       "information not found\n", __func__);
 		ret = -ENXIO;
-		goto reg_err;
+		goto irq_err;
+	}
+	ret = request_irq(irq, geth_interrupt, IRQF_SHARED,
+			dev_name(&pdev->dev), ndev);
+	if (unlikely(ret < 0)) {
+		netdev_err(ndev, "Could not request irq %d, error: %d\n",
+				ndev->irq, ret);
+		goto irq_err;
 	}
 
 	/* setup the netdevice, fill the field of netdevice */
@@ -1512,7 +1811,8 @@ static int geth_probe(struct platform_device *pdev)
 	spin_lock_init(&priv->lock);
 	spin_lock_init(&priv->tx_lock);
 
-	sunxi_geth_register((void *)ndev->base_addr, HW_VERSION);
+	/* The last val is mdc clock ratio */
+	sunxi_geth_register((void *)ndev->base_addr, HW_VERSION, 0x03);
 
 	ret = register_netdev(ndev);
 	if (ret) {
@@ -1527,6 +1827,8 @@ static int geth_probe(struct platform_device *pdev)
 	return 0;
 
 reg_err:
+	free_irq(irq, ndev);
+irq_err:
 	iounmap(priv->base);
 map_err:
 	release_mem_region(res->start, resource_size(res));
@@ -1544,11 +1846,20 @@ static int geth_remove(struct platform_device *pdev)
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct geth_priv *priv = netdev_priv(ndev);
 	struct resource *res;
+#if defined(CONFIG_GETH_PHY_POWER)
+	int i;
+
+	for (i=0; i < ARRAY_SIZE(power_tb); i++) {
+		if (power_tb[i].name)
+			kfree(power_tb[i].name);
+	}
+#endif
 
 	netif_napi_del(&priv->napi);
 	unregister_netdev(ndev);
 
 	iounmap(priv->base);
+	free_irq(ndev->irq, ndev);
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "geth_io");
 	release_mem_region(res->start, resource_size(res));
 
