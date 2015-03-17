@@ -1516,6 +1516,22 @@ s32 bsp_disp_set_back_color(u32 screen_id, disp_color_info *bk_color)
 	return DIS_FAIL;
 }
 
+s32 bsp_disp_set_color_key(u32 screen_id, disp_colorkey *ck)
+{
+	struct disp_manager *mgr;
+
+	mgr = disp_get_layer_manager(screen_id);
+	if(!mgr) {
+		DE_WRN("get mgr%d fail\n", screen_id);
+		return DIS_FAIL;
+	}
+
+	if(mgr->set_color_key)
+		return mgr->set_color_key(mgr, ck);
+
+	return DIS_FAIL;
+}
+
 /***********************************************************
  *
  * capture interface

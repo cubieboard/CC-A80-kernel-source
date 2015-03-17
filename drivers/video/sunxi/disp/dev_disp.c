@@ -1152,6 +1152,18 @@ long disp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 	}
 
+	case DISP_CMD_SET_COLORKEY:
+	{
+		disp_colorkey para;
+
+		if(copy_from_user(&para, (void __user *)ubuffer[1],sizeof(disp_colorkey)))	{
+			__wrn("copy_from_user fail\n");
+			return  -EFAULT;
+		}
+		ret = bsp_disp_set_color_key(ubuffer[0], &para);
+		break;
+	}
+
 	case DISP_CMD_GET_OUTPUT_TYPE:
 		if(DISPLAY_NORMAL == suspend_status)	{
 			ret =  bsp_disp_get_output_type(ubuffer[0]);
@@ -1519,6 +1531,11 @@ long disp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			__wrn("copy_from_user fail\n");
 			return  -EFAULT;
 		}
+		if(copy_from_user(gbuffer, (void __user *)para.addr, 32*32))	{
+			__wrn("copy_from_user fail\n");
+			return  -EFAULT;
+		}
+		para.addr = (unsigned int)gbuffer;
 		ret = bsp_disp_cursor_set_fb(ubuffer[0], &para);
 		break;
 	}
@@ -1528,11 +1545,11 @@ long disp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			__wrn("para invalid in display ioctrl DISP_CMD_HWC_SET_PALETTE_TABLE,buffer:0x%x, size:0x%x\n", (unsigned int)ubuffer[1], (unsigned int)ubuffer[3]);
 			return -1;
 		}
-		if(copy_from_user(gbuffer, (void __user *)ubuffer[1],ubuffer[3]))	{
+		if(copy_from_user(gbuffer+1024, (void __user *)ubuffer[1],ubuffer[3]))	{
 			__wrn("copy_from_user fail\n");
 			return  -EFAULT;
 		}
-		ret = bsp_disp_cursor_set_palette(ubuffer[0], (void*)gbuffer, ubuffer[2], ubuffer[3]);
+		ret = bsp_disp_cursor_set_palette(ubuffer[0], (void*)(gbuffer+1024), ubuffer[2], ubuffer[3]);
 		break;
 #endif
 	//----for test----

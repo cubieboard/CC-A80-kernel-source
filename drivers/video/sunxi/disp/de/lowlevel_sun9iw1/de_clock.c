@@ -47,7 +47,7 @@ __disp_clk_t disp_clk_mod_tbl[] =
 u32 de_clk_get_freq(u32 freq_level)
 {
 	if(freq_level == 0)
-		de_clk_freq = 297000000;
+		de_clk_freq = 396000000;
 	else if(freq_level == 1)
 		de_clk_freq = 396000000;
 

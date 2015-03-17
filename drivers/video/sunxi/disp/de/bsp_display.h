@@ -204,6 +204,7 @@ extern s32 bsp_disp_cursor_set_fb(u32 screen_id, disp_cursor_fb *fb);
 extern s32 bsp_disp_cursor_set_palette(u32 screen_id, void *palette, u32 offset, u32 palette_size);
 #endif
 extern s32 bsp_disp_set_back_color(u32 screen_id, disp_color_info *bk_color);
+extern s32 bsp_disp_set_color_key(u32 screen_id, disp_colorkey *ck);
 
 int bsp_disp_feat_get_num_screens(void);
 int bsp_disp_feat_get_num_layers(u32 screen_id);
