@@ -815,7 +815,7 @@ static int Fb_cursor(struct fb_info *info, struct fb_cursor *cursor)
 {
 	__inf("Fb_cursor\n");
 
-	return 0;
+	return -EINVAL;
 }
 
 s32 DRV_disp_vsync_event(u32 sel)
