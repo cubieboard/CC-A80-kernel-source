@@ -3269,6 +3269,7 @@ static int sndvir_audio_startup(struct snd_pcm_substream *substream,
 		reg_val |= (0x1<<MOD_RESET_AIF1)|(0x1<<MOD_RESET_ADC_DIG);
 		snd_soc_write(codec, MOD_RST_CTRL, reg_val);
 	}
+	codec_headphone_play_open(codec);
 	return 0;
 }
 //extern int r_i2s_tx_disable(void);
@@ -3542,6 +3543,7 @@ static void sndvir_audio_shutdown(struct snd_pcm_substream *substream,
 static int codec_capture_open(struct snd_soc_codec *codec)
 {
 	int reg_val;
+	codec_headsetmic_voicerecord = true;
 	if (codec_headsetmic_voicerecord) {
 		/*select  mic1/2 boost control*/
 		reg_val = snd_soc_read(codec, ADC_SRCBST_CTRL);
