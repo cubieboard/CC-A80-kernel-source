@@ -1321,6 +1321,11 @@ long disp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	#if defined(CONFIG_ARCH_SUN9IW1P1)
         ret = bsp_disp_lcd_get_vga_mode(ubuffer[0]);
 	#endif
+
+	case DISP_CMD_IS_VGA_USED:
+	#if defined(CONFIG_ARCH_SUN9IW1P1)
+	ret = bsp_disp_lcd_is_vga_used(ubuffer[0]);
+	#endif
         break;
 
 	//----framebuffer----

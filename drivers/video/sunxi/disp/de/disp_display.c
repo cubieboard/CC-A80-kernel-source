@@ -769,6 +769,15 @@ s32 bsp_disp_lcd_set_vga_mode(u32 screen_id, disp_tv_mode vga_mode)
      }
      return DIS_FAIL;
 }
+s32 bsp_disp_lcd_is_vga_used(u32 screen_id)
+{
+    struct disp_lcd *lcd;
+    lcd = disp_get_lcd(screen_id);
+     if(lcd && lcd->is_vga_used && lcd->is_vga_used(lcd)){
+        return 1; 
+     }
+     return 0;
+}
 
 s32 bsp_disp_get_timming(u32 screen_id, disp_video_timing * tt)
 {

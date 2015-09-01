@@ -760,6 +760,7 @@ typedef enum tag_DISP_CMD
     DISP_CMD_VGA_DISABLE            = 0x121,
     DISP_CMD_VGA_SET_MODE            = 0x122,
     DISP_CMD_VGA_GET_MODE            = 0x123,
+    DISP_CMD_IS_VGA_USED           = 0x124,
  //   DISP_CMD_VGA_SUPPORT_MODE       = 0x124,
 
 	//---- capture ---

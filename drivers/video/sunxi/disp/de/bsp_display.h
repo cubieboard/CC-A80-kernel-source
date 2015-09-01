@@ -158,6 +158,7 @@ extern s32 bsp_disp_lcd_gpio_set_value(u32 screen_id, u32 io_index, u32 value);
 extern s32 bsp_disp_lcd_gpio_set_direction(u32 screen_id, u32 io_index, u32 direction);
 extern s32 bsp_disp_lcd_get_vga_mode(u32 screen_id);
 extern s32 bsp_disp_lcd_set_vga_mode(u32 screen_id, disp_tv_mode vga_mode);
+extern s32 bsp_disp_lcd_is_vga_used(u32 screen_id);
 
 extern s32 bsp_disp_layer_set_info(u32 screen_id, u32 layer_id,disp_layer_info *player);
 extern s32 bsp_disp_layer_get_info(u32 screen_id, u32 layer_id,disp_layer_info *player);
