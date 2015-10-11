@@ -81,13 +81,15 @@ resume1-y :=   super/common.o                \
 
 resume1-y := $(addprefix $(obj)/,$(resume1-y))
 
-$(obj)/resume1.code: $(obj)/resume1.bin
+$(obj)/resume1.code: $(obj)/resume1.bin $(obj)/gen_check_code
 	$(Q)$(obj)/gen_check_code $(obj)/resume1.bin $(obj)/super/resume/resume1.code
 	rm -rf *.o $(obj)/../*.o
 	
 $(obj)/resume1.bin: $(obj)/resume1.elf FORCE
 	$(Q)$(CROSS_COMPILE)objcopy -O binary $(obj)/resume1.elf $(obj)/resume1.bin
-	
+
+$(obj)/gen_check_code: $(obj)/gen_check_code.c
+	$(Q)gcc	-o $@ $^
 
 ifneq ($(strip $(CONFIG_ARCH_SUN9I)),)
 $(obj)/resume1.elf: $(obj)/sun9i_resume1_scatter.scat $(resume1-y)
